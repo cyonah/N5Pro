@@ -1,0 +1,43 @@
+# Builds a debug APK of stock Gadgetbridge in GitHub's cloud, so your own laptop needs no Android tooling.
+# Save this file in your GitHub repository at:  .github/workflows/build-gadgetbridge.yml
+# Then open the repository's "Actions" tab, pick "Build Gadgetbridge debug APK" and press "Run workflow".
+# UNTESTED: written from Gadgetbridge's published setup notes; the first run may need small fixes.
+name: Build Gadgetbridge debug APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false"
+    steps:
+      - name: Get Gadgetbridge source
+        run: git clone --depth 1 https://codeberg.org/Freeyourgadget/Gadgetbridge.git
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK (accepts licences)
+        uses: android-actions/setup-android@v3
+
+      - name: List available assemble tasks (for diagnosis)
+        working-directory: Gadgetbridge
+        run: ./gradlew tasks --all | grep -i "^app:assemble" || true
+
+      # Gadgetbridge's own test task is named testMainDebugUnitTest, so the main/debug variant should be assembleMainDebug.
+      - name: Build debug APK
+        working-directory: Gadgetbridge
+        run: ./gradlew assembleMainDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: gadgetbridge-debug-apk
+          path: Gadgetbridge/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
