@@ -23,8 +23,13 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK (accepts licences)
-        uses: android-actions/setup-android@v3
+      # GitHub's Ubuntu runners already include the Android SDK, so no setup action is needed.
+      # (android-actions/setup-android failed here trying to install the obsolete 'tools' package.)
+      - name: Accept Android SDK licences
+        run: |
+          SDKM="$(command -v sdkmanager || find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | head -n 1)"
+          echo "Using sdkmanager at: $SDKM"
+          yes | "$SDKM" --licenses > /dev/null || true
 
       - name: List available assemble tasks (for diagnosis)
         working-directory: Gadgetbridge
