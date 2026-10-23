@@ -1,0 +1,52 @@
+# Collects the parts of Gadgetbridge's source that I need to write the exact patch for the XWatch N5 Pro.
+# It builds nothing, runs in about a minute, and produces one text file you can upload to me.
+# Save as .github/workflows/inspect-gadgetbridge.yml, then Actions -> "Inspect Gadgetbridge source" -> Run workflow.
+name: Inspect Gadgetbridge source
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Get Gadgetbridge source
+        run: git clone --depth 1 https://codeberg.org/Freeyourgadget/Gadgetbridge.git
+
+      - name: Collect source excerpts
+        working-directory: Gadgetbridge
+        run: |
+          OUT="$GITHUB_WORKSPACE/gb_inspect.txt"
+          J=app/src/main/java/nodomain/freeyourgadget/gadgetbridge
+          sec() { echo; echo "=================== $1 ==================="; }
+          {
+            sec "git commit"; git log -1 --format='%H %ad %s'
+            sec "DeviceType.java: first 60 lines"; sed -n '1,60p' $J/model/DeviceType.java
+            sec "DeviceType.java: lines around UNKNOWN / TEST entries"; grep -n -E 'UNKNOWN|TEST\(|XWATCH|XWatch' $J/model/DeviceType.java
+            sec "DeviceType.java: last 60 lines"; tail -n 60 $J/model/DeviceType.java
+            sec "files mentioning XWatch (any case)"; grep -rli 'xwatch' app/src/main | head -20
+            sec "Gadgetbridge's own XWatch coordinator(s)"
+            for f in $(grep -rli 'xwatch' app/src/main/java | grep -i coordinator | head -3); do echo "--- $f"; cat "$f"; done
+            sec "small example BLE devices (coordinator + support) for reference"
+            for f in $(ls $J/devices/hplus/*Coordinator.java $J/devices/itag/*Coordinator.java 2>/dev/null | head -2); do echo "--- $f"; cat "$f"; done
+            sec "AbstractBLEDeviceCoordinator and AbstractBTLESingleDeviceSupport signatures"
+            grep -rn -E 'class AbstractBLEDeviceCoordinator|class AbstractBTLESingleDeviceSupport|class AbstractBTLEDeviceSupport' $J | head
+            for f in $(find $J -name AbstractBTLESingleDeviceSupport.java -o -name AbstractBTLEDeviceSupport.java); do echo "--- $f"; grep -n -E '^\s*(public|protected|abstract)' "$f" | head -80; done
+            sec "TransactionBuilder public methods"
+            f=$(find $J -name TransactionBuilder.java | head -1); echo "--- $f"; grep -n -E '^\s*public' "$f"
+            sec "Battery / version event classes"
+            for n in GBDeviceEventBatteryInfo GBDeviceEventVersionInfo; do f=$(find $J -name $n.java | head -1); echo "--- $f"; cat "$f"; done
+            sec "simple example support class (iTag if present)"
+            for f in $(find $J/service/devices/itag -name '*Support.java' 2>/dev/null | head -1); do echo "--- $f"; cat "$f"; done
+            sec "How coordinators get registered"
+            grep -rn -E 'createCoordinators|getAllCoordinators' $J | head
+            sec "strings.xml device names (sample)"; grep -n 'devicetype_' app/src/main/res/values/strings.xml | head -8
+          } > "$OUT" 2>&1
+          wc -c "$OUT"
+
+      - name: Upload excerpts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gb-inspect
+          path: gb_inspect.txt
