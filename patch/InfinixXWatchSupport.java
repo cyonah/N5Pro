@@ -14,7 +14,6 @@ import android.bluetooth.BluetoothGattCharacteristic;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TimeZone;
@@ -24,30 +23,44 @@ import nodomain.freeyourgadget.gadgetbridge.deviceevents.GBDeviceEventBatteryInf
 import nodomain.freeyourgadget.gadgetbridge.deviceevents.GBDeviceEventVersionInfo;
 import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice;
 import nodomain.freeyourgadget.gadgetbridge.service.btle.AbstractBTLESingleDeviceSupport;
+import nodomain.freeyourgadget.gadgetbridge.service.btle.GattService;
 import nodomain.freeyourgadget.gadgetbridge.service.btle.TransactionBuilder;
 import nodomain.freeyourgadget.gadgetbridge.util.GB;
 
 /**
- * First milestone: connect, read firmware version and battery, set the time,
- * and log (not store) the answers to "today" history queries so the decoders
- * can be checked on a live watch.
+ * Infinix XWatch N5 Pro support.
+ *
+ * Derived from a LightBlue capture (LBX_LOGS_2026-10-22_14-56):
+ *   - no bind handshake exists; the watch answers CMD_VERSION (0x32) directly
+ *   - the version reply arrives as a notification on CHAR_COMMAND (.9231)
+ *   - CHAR_SECONDARY (.9232) accepts writes but does not echo command replies
+ *   - the watch advertises the standard Heart Rate service (180d / 2a37)
+ *
+ * The history commands (0x34 / 0x36 / 0x38) in XWatchProtocol are NOT
+ * exercised here, because the capture never shows the official app sending
+ * them. Their decoders stay in XWatchProtocol unused until we learn the real
+ * command bytes from a capture that contains an actual sync.
  */
 public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
     private static final Logger LOG = LoggerFactory.getLogger(InfinixXWatchSupport.class);
+
+    /** Wait after enabling notifications before the first command write. */
+    private static final int NOTIFY_SETTLE_MS = 2000;
 
     private final Map<UUID, XWatchProtocol.Reassembler> reassemblers = new HashMap<>();
 
     public InfinixXWatchSupport() {
         super(LOG);
         addSupportedService(XWatchProtocol.SERVICE);
+        // Let Gadgetbridge handle the standard Heart Rate service on its own.
+        addSupportedService(GattService.SERVICE_HEART_RATE.uuid);
+
         reassemblers.put(XWatchProtocol.CHAR_COMMAND, new XWatchProtocol.Reassembler());
         reassemblers.put(XWatchProtocol.CHAR_SECONDARY, new XWatchProtocol.Reassembler());
     }
 
     @Override
-    protected TransactionBuilder initializeDevice(final TransactionBuilder builder) {
-        builder.setDeviceState(GBDevice.State.INITIALIZING);
-
+    protected TransactionBuilder initializeDevice(final TransactionBuilder ignored) {
         for (final XWatchProtocol.Reassembler r : reassemblers.values()) {
             r.reset();
         }
@@ -60,31 +73,31 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
             LOG.warn("command characteristic {} not found", XWatchProtocol.CHAR_COMMAND);
         }
 
-        builder.notify(XWatchProtocol.CHAR_COMMAND, true);
-        builder.notify(XWatchProtocol.CHAR_SECONDARY, true);
-
         // Avoids a database error if the first save happens before the version reply arrives.
         getDevice().setFirmwareVersion("N/A");
         getDevice().setFirmwareVersion2("N/A");
 
+        // --- Transaction 1: subscribe and mark initialising. -----------------
+        // The descriptor write from notify() must complete before the watch
+        // will deliver a command reply, so this is queued separately.
+        TransactionBuilder b1 = createTransactionBuilder("xwatch subscribe");
+        b1.setDeviceState(GBDevice.State.INITIALIZING);
+        b1.notify(XWatchProtocol.CHAR_COMMAND, true);
+        b1.notify(XWatchProtocol.CHAR_SECONDARY, true);
+        b1.queue();
+
+        // --- Transaction 2: give the descriptors time, then ask. ------------
         final long nowMillis = System.currentTimeMillis();
-        // Hypothesis from one capture: timezone value = offset in hours * 100 (300 for UTC+3).
-        // getOffset() returns milliseconds, so: ms -> hours -> *100.
+        // Hypothesis from the capture: timezone value = offset in hours * 100.
         final int tzValue = (int) (TimeZone.getDefault().getOffset(nowMillis) / 3_600_000L * 100L);
 
-        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.versionRequest());
-        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.batteryRequest());
-        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.timeSync(nowMillis / 1000, tzValue));
-        // Read-only queries, logged only: step, heart-rate and sleep data for "today".
-        builder.write(XWatchProtocol.CHAR_COMMAND,
-                XWatchProtocol.historyRequest(XWatchProtocol.CMD_STEPS, XWatchProtocol.QUERY_TODAY));
-        builder.write(XWatchProtocol.CHAR_COMMAND,
-                XWatchProtocol.historyRequest(XWatchProtocol.CMD_HEART_RATE, XWatchProtocol.QUERY_TODAY));
-        builder.write(XWatchProtocol.CHAR_COMMAND,
-                XWatchProtocol.historyRequest(XWatchProtocol.CMD_SLEEP, XWatchProtocol.QUERY_TODAY));
-
-        builder.setDeviceState(GBDevice.State.INITIALIZED);
-        return builder;
+        TransactionBuilder b2 = createTransactionBuilder("xwatch init");
+        b2.sleep(NOTIFY_SETTLE_MS);
+        b2.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.versionRequest());
+        b2.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.batteryRequest());
+        b2.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.timeSync(nowMillis / 1000, tzValue));
+        b2.setDeviceState(GBDevice.State.INITIALIZED);
+        return b2;
     }
 
     @Override
@@ -102,7 +115,7 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         }
         for (final XWatchProtocol.Frame frame : reassembler.feed(value)) {
             try {
-                handleFrame(frame);
+                handleFrame(uuid, frame);
             } catch (final RuntimeException e) {
                 LOG.error("failed to handle frame cmd 0x{}", Integer.toHexString(frame.cmd), e);
             }
@@ -110,12 +123,13 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         return true;
     }
 
-    private void handleFrame(final XWatchProtocol.Frame f) {
-        LOG.debug("frame cmd=0x{} flags=0x{} idx={} len={}", Integer.toHexString(f.cmd),
-                Integer.toHexString(f.flags), f.idx, f.payload.length);
+    private void handleFrame(final UUID source, final XWatchProtocol.Frame f) {
+        LOG.debug("{} frame cmd=0x{} flags=0x{} idx={} len={}", source,
+                Integer.toHexString(f.cmd), Integer.toHexString(f.flags), f.idx, f.payload.length);
         switch (f.cmd) {
             case XWatchProtocol.CMD_VERSION: {
                 final String version = XWatchProtocol.decodeVersion(f.payload);
+                LOG.info("got firmware version {}", version);
                 if (version != null) {
                     final GBDeviceEventVersionInfo event = new GBDeviceEventVersionInfo();
                     event.fwVersion = version;
@@ -125,6 +139,7 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
             }
             case XWatchProtocol.CMD_BATTERY: {
                 final int level = XWatchProtocol.decodeBattery(f.payload);
+                LOG.info("got battery level {}", level);
                 if (level >= 0 && level <= 100) {
                     final GBDeviceEventBatteryInfo event = new GBDeviceEventBatteryInfo();
                     event.level = level;
@@ -132,58 +147,24 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
                 }
                 break;
             }
-            case XWatchProtocol.CMD_STEPS:
-                for (final XWatchProtocol.StepDay d : XWatchProtocol.decodeSteps(f.payload)) {
-                    LOG.info("steps {}: total {} in {} buckets", new Date(d.date * 1000), d.total(), d.steps.size());
-                }
-                break;
-            case XWatchProtocol.CMD_HEART_RATE:
-                for (final XWatchProtocol.HeartRateDay d : XWatchProtocol.decodeHeartRate(f.payload)) {
-                    int nonZero = 0;
-                    for (final byte b : d.readings) {
-                        if (b != 0) nonZero++;
-                    }
-                    LOG.info("heart rate {}: {} slots, {} non-zero", new Date(d.date * 1000), d.readings.length, nonZero);
-                }
-                break;
-            case XWatchProtocol.CMD_SLEEP:
-                for (final XWatchProtocol.SleepDay d : XWatchProtocol.decodeSleep(f.payload)) {
-                    for (final XWatchProtocol.SleepSegment s : d.segments) {
-                        LOG.info("sleep {} -> {}: {} min state {} category {}", new Date(s.start * 1000),
-                                new Date(s.end * 1000), s.minutes, s.state, s.category);
-                    }
-                }
-                break;
             default:
+                // Includes the unsolicited 0x91 stream seen on CHAR_SECONDARY.
                 LOG.debug("cmd 0x{} payload {}", Integer.toHexString(f.cmd), GB.hexdump(f.payload));
         }
     }
 
     // ---------------------------------------------------------------- DeviceSupport boilerplate
 
-    /**
-     * Required by DeviceSupport. Returning true lets Gadgetbridge proactively reconnect
-     * (on Bluetooth on, app start, etc.). Change to false if you only ever want to
-     * connect by tapping the device card.
-     */
     @Override
     public boolean useAutoConnect() {
         return true;
     }
 
-    /**
-     * The XWatch command characteristic is write-without-response, so we do not need the
-     * implicit "modify" callback. Returning false matches how the device behaves.
-     */
     @Override
     public boolean getImplicitCallbackModify() {
         return false;
     }
 
-    /**
-     * Write-Without-Response means there is no GATT-level confirmation, so do not ask
-     * Gadgetbridge to wait for a write-request response.
-     */
     @Override
     public boolean getSendWriteRequestResponse() {
         return false;
