@@ -21,7 +21,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"  # Gadgetbridge's build plugin is compiled for Java 21 (class file 65)
 
       # GitHub's Ubuntu runners already include the Android SDK, so no setup action is needed.
       # (android-actions/setup-android failed here trying to install the obsolete 'tools' package.)
