@@ -36,10 +36,11 @@ import nodomain.freeyourgadget.gadgetbridge.util.GB;
  *   - CHAR_SECONDARY (.9232) accepts writes but does not echo command replies
  *   - the watch advertises the standard Heart Rate service (180d / 2a37)
  *
- * The history commands (0x34 / 0x36 / 0x38) in XWatchProtocol are NOT
- * exercised here, because the capture never shows the official app sending
- * them. Their decoders stay in XWatchProtocol unused until we learn the real
- * command bytes from a capture that contains an actual sync.
+ * IMPORTANT: everything must go into the single TransactionBuilder that
+ * initializeDevice() returns.  Building a second transaction inside this
+ * method and queueing it manually leaves the device stuck in INITIALIZING,
+ * because the framework's own initialization transaction never gets the
+ * SetDeviceStateAction(INITIALIZED) it expects.
  */
 public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
     private static final Logger LOG = LoggerFactory.getLogger(InfinixXWatchSupport.class);
@@ -60,7 +61,7 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
     }
 
     @Override
-    protected TransactionBuilder initializeDevice(final TransactionBuilder ignored) {
+    protected TransactionBuilder initializeDevice(final TransactionBuilder builder) {
         for (final XWatchProtocol.Reassembler r : reassemblers.values()) {
             r.reset();
         }
@@ -77,27 +78,22 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         getDevice().setFirmwareVersion("N/A");
         getDevice().setFirmwareVersion2("N/A");
 
-        // --- Transaction 1: subscribe and mark initialising. -----------------
-        // The descriptor write from notify() must complete before the watch
-        // will deliver a command reply, so this is queued separately.
-        TransactionBuilder b1 = createTransactionBuilder("xwatch subscribe");
-        b1.setDeviceState(GBDevice.State.INITIALIZING);
-        b1.notify(XWatchProtocol.CHAR_COMMAND, true);
-        b1.notify(XWatchProtocol.CHAR_SECONDARY, true);
-        b1.queue();
-
-        // --- Transaction 2: give the descriptors time, then ask. ------------
         final long nowMillis = System.currentTimeMillis();
         // Hypothesis from the capture: timezone value = offset in hours * 100.
         final int tzValue = (int) (TimeZone.getDefault().getOffset(nowMillis) / 3_600_000L * 100L);
 
-        TransactionBuilder b2 = createTransactionBuilder("xwatch init");
-        b2.sleep(NOTIFY_SETTLE_MS);
-        b2.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.versionRequest());
-        b2.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.batteryRequest());
-        b2.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.timeSync(nowMillis / 1000, tzValue));
-        b2.setDeviceState(GBDevice.State.INITIALIZED);
-        return b2;
+        // One transaction only. The sleep between notify() and write() lets the
+        // two descriptor writes complete before the first command goes out,
+        // which is what the capture showed.
+        builder.setDeviceState(GBDevice.State.INITIALIZING);
+        builder.notify(XWatchProtocol.CHAR_COMMAND, true);
+        builder.notify(XWatchProtocol.CHAR_SECONDARY, true);
+        builder.sleep(NOTIFY_SETTLE_MS);
+        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.versionRequest());
+        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.batteryRequest());
+        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.timeSync(nowMillis / 1000, tzValue));
+        builder.setDeviceState(GBDevice.State.INITIALIZED);
+        return builder;
     }
 
     @Override
