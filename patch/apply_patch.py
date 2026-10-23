@@ -3,8 +3,8 @@
 
 Usage:  python3 apply_patch.py <path-to-Gadgetbridge-checkout>
 
-Fails loudly (non-zero exit) if any anchor is missing, so a CI run cannot
-silently produce a stock APK.
+Runs on the GitHub runner, not on Windows. Fails loudly (non-zero exit) if any
+anchor is missing, so a CI run cannot silently produce a stock APK.
 
 Why the old XWatch driver must be narrowed
 ------------------------------------------
