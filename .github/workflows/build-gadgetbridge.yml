@@ -1,8 +1,6 @@
-# Builds a debug APK of stock Gadgetbridge in GitHub's cloud, so your own laptop needs no Android tooling.
-# Save this file in your GitHub repository at:  .github/workflows/build-gadgetbridge.yml
-# Then open the repository's "Actions" tab, pick "Build Gadgetbridge debug APK" and press "Run workflow".
-# UNTESTED: written from Gadgetbridge's published setup notes; the first run may need small fixes.
-name: Build Gadgetbridge debug APK
+# Rebuilds a Gadgetbridge debug APK with the Infinix XWatch N5 Pro support patched in.
+# Put this at .github/workflows/build-gadgetbridge.yml in your repository.
+name: Build Gadgetbridge debug APK (with Infinix XWatch)
 
 on:
   workflow_dispatch:
@@ -14,6 +12,9 @@ jobs:
     env:
       GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false"
     steps:
+      - name: Check out this patch repository
+        uses: actions/checkout@v4
+
       - name: Get Gadgetbridge source
         run: git clone --depth 1 https://codeberg.org/Freeyourgadget/Gadgetbridge.git
 
@@ -21,21 +22,34 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "21"  # Gadgetbridge's build plugin is compiled for Java 21 (class file 65)
+          java-version: "21"   # Gadgetbridge's build plugin targets Java 21
 
-      # GitHub's Ubuntu runners already include the Android SDK, so no setup action is needed.
-      # (android-actions/setup-android failed here trying to install the obsolete 'tools' package.)
       - name: Accept Android SDK licences
         run: |
           SDKM="$(command -v sdkmanager || find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | head -n 1)"
           echo "Using sdkmanager at: $SDKM"
           yes | "$SDKM" --licenses > /dev/null || true
 
-      - name: List available assemble tasks (for diagnosis)
-        working-directory: Gadgetbridge
-        run: ./gradlew tasks --all | grep -i "^app:assemble" || true
+      - name: Apply Infinix XWatch patches to Gadgetbridge
+        run: |
+          set -euo pipefail
+          python3 patch/apply_patch.py Gadgetbridge
 
-      # Gadgetbridge's own test task is named testMainDebugUnitTest, so the main/debug variant should be assembleMainDebug.
+          GB_JAVA="Gadgetbridge/app/src/main/java/nodomain/freeyourgadget/gadgetbridge"
+          mkdir -p "$GB_JAVA/devices/infinix" "$GB_JAVA/service/devices/infinix"
+          cp patch/InfinixXWatchCoordinator.java "$GB_JAVA/devices/infinix/"
+          cp patch/InfinixXWatchSupport.java     "$GB_JAVA/service/devices/infinix/"
+          cp patch/XWatchProtocol.java           "$GB_JAVA/service/devices/infinix/"
+
+          echo "--- verifying the old pattern was narrowed ---"
+          grep -n 'Pattern.compile("XWatch' "$GB_JAVA/devices/xwatch/XWatchCoordinator.java"
+          echo "--- verifying new enum + import ---"
+          grep -n 'INFINIX_XWATCH_N5_PRO' "$GB_JAVA/model/DeviceType.java"
+
+      - name: List available assemble tasks (diagnostic)
+        working-directory: Gadgetbridge
+        run: ./gradlew tasks --all | grep -iE "^app:assemble" || true
+
       - name: Build debug APK
         working-directory: Gadgetbridge
         run: ./gradlew assembleMainDebug --no-daemon --stacktrace
@@ -43,6 +57,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: gadgetbridge-debug-apk
+          name: gadgetbridge-infinix-debug-apk
           path: Gadgetbridge/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
