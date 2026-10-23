@@ -311,3 +311,144 @@ public final class XWatchProtocol {
         public final int b;
 
         IndexEntry(long date, int a, int b) {
+            this.date = date;
+            this.a = a;
+            this.b = b;
+        }
+    }
+
+    public static final class StepDay {
+        public final long date;
+        public final List<Integer> steps;
+        public final int interval;
+
+        StepDay(long date, List<Integer> steps, int interval) {
+            this.date = date;
+            this.steps = steps;
+            this.interval = interval;
+        }
+
+        public int total() {
+            int t = 0;
+            for (final int s : steps) t += s;
+            return t;
+        }
+    }
+
+    public static final class HeartRateDay {
+        public final long date;
+        public final int intervalMinutes;
+        /** One unsigned byte per slot; 0 = no reading. */
+        public final byte[] readings;
+
+        HeartRateDay(long date, int intervalMinutes, byte[] readings) {
+            this.date = date;
+            this.intervalMinutes = intervalMinutes;
+            this.readings = readings;
+        }
+    }
+
+    public static final class SleepSegment {
+        public final long start;
+        public final long end;
+        public final int minutes;
+        public final int state;
+        public final int category;
+
+        SleepSegment(long start, long end, int minutes, int state, int category) {
+            this.start = start;
+            this.end = end;
+            this.minutes = minutes;
+            this.state = state;
+            this.category = category;
+        }
+    }
+
+    public static final class SleepDay {
+        public final long date;
+        public final List<SleepSegment> segments;
+
+        SleepDay(long date, List<SleepSegment> segments) {
+            this.date = date;
+            this.segments = segments;
+        }
+    }
+
+    /** Index entries from a 0x34 / 0x36 / 0x38 reply (the summary form that precedes the real data). */
+    public static List<IndexEntry> decodeIndex(final int cmd, final byte[] payload) {
+        final List<IndexEntry> out = new ArrayList<>();
+        for (final byte[] rec : blobs(parse(payload), 1)) {
+            final List<Field> f = parse(rec);
+            final Field marker = first(f, cmd == CMD_HEART_RATE ? 3 : 2);
+            if (marker != null && !marker.isVarint()) continue; // this is a data record
+            out.add(new IndexEntry(longOf(f, 1, 0), (int) longOf(f, 2, 0), (int) longOf(f, 3, 0)));
+        }
+        return out;
+    }
+
+    public static List<StepDay> decodeSteps(final byte[] payload) {
+        final List<StepDay> out = new ArrayList<>();
+        for (final byte[] rec : blobs(parse(payload), 1)) {
+            final List<Field> f = parse(rec);
+            final Field s = first(f, 2);
+            if (s == null || s.isVarint()) continue;
+            out.add(new StepDay(longOf(f, 1, 0), ints(f, 2), (int) longOf(f, 3, 0)));
+        }
+        return out;
+    }
+
+    public static List<HeartRateDay> decodeHeartRate(final byte[] payload) {
+        final List<HeartRateDay> out = new ArrayList<>();
+        for (final byte[] rec : blobs(parse(payload), 1)) {
+            final List<Field> f = parse(rec);
+            final Field l = first(f, 3);
+            if (l == null || l.isVarint()) continue;
+            out.add(new HeartRateDay(longOf(f, 1, 0), (int) longOf(f, 2, 0), l.data));
+        }
+        return out;
+    }
+
+    public static List<SleepDay> decodeSleep(final byte[] payload) {
+        final List<SleepDay> out = new ArrayList<>();
+        for (final byte[] rec : blobs(parse(payload), 1)) {
+            final List<Field> f = parse(rec);
+            final List<byte[]> segs = blobs(f, 2);
+            if (segs.isEmpty()) continue;
+            final List<SleepSegment> list = new ArrayList<>();
+            for (final byte[] s : segs) {
+                final List<Field> sf = parse(s);
+                list.add(new SleepSegment(longOf(sf, 1, 0), longOf(sf, 2, 0), (int) longOf(sf, 3, 0),
+                        (int) longOf(sf, 4, 0), (int) longOf(sf, 5, 0)));
+            }
+            out.add(new SleepDay(longOf(f, 1, 0), list));
+        }
+        return out;
+    }
+
+    /**
+     * Phone-side checkpoint the app sends after each index reply: for every index entry
+     * {date, 0, 0, a, a}, so the watch only sends what the phone does not already have.
+     * Payload layout reproduced byte-for-byte from the capture.
+     */
+    public static byte[] checkpoint(final int cmd, final List<IndexEntry> entries) {
+        final ByteArrayOutputStream o = new ByteArrayOutputStream();
+        for (final IndexEntry e : entries) {
+            final ByteArrayOutputStream r = new ByteArrayOutputStream();
+            r.write(0x08);
+            writeVarint(r, e.date);
+            r.write(0x10);
+            r.write(0x00);
+            r.write(0x18);
+            r.write(0x00);
+            r.write(0x20);
+            writeVarint(r, e.a);
+            r.write(0x28);
+            writeVarint(r, e.a);
+            final byte[] rec = r.toByteArray();
+            o.write(0x0A);
+            writeVarint(o, rec.length);
+            o.write(rec, 0, rec.length);
+        }
+        return buildFrame(cmd, o.toByteArray());
+    }
+}
