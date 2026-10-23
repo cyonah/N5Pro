@@ -158,4 +158,34 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
                 LOG.debug("cmd 0x{} payload {}", Integer.toHexString(f.cmd), GB.hexdump(f.payload));
         }
     }
+
+    // ---------------------------------------------------------------- DeviceSupport boilerplate
+
+    /**
+     * Required by DeviceSupport. Returning true lets Gadgetbridge proactively reconnect
+     * (on Bluetooth on, app start, etc.). Change to false if you only ever want to
+     * connect by tapping the device card.
+     */
+    @Override
+    public boolean useAutoConnect() {
+        return true;
+    }
+
+    /**
+     * The XWatch command characteristic is write-without-response, so we do not need the
+     * implicit "modify" callback. Returning false matches how the device behaves.
+     */
+    @Override
+    public boolean getImplicitCallbackModify() {
+        return false;
+    }
+
+    /**
+     * Write-Without-Response means there is no GATT-level confirmation, so do not ask
+     * Gadgetbridge to wait for a write-request response.
+     */
+    @Override
+    public boolean getSendWriteRequestResponse() {
+        return false;
+    }
 }
