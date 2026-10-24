@@ -86,6 +86,7 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         // One transaction only. The sleep between notify() and write() lets the
         // two descriptor writes complete before the first command goes out,
         // which is what the capture showed.
+        LOG.info("initializeDevice: queueing notify, version, battery, time sync (tz value {}), history queries", tzValue);
         builder.setDeviceState(GBDevice.State.INITIALIZING);
         builder.notify(XWatchProtocol.CHAR_COMMAND, true);
         builder.notify(XWatchProtocol.CHAR_SECONDARY, true);
@@ -147,6 +148,46 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
                     event.level = level;
                     handleGBDeviceEvent(event);
                 }
+                break;
+            }
+            case XWatchProtocol.CMD_BIND_REPLY: {
+                // Unsolicited events: field 1 = event id, field 2 = a small message whose field 1 is usually the value.
+                long eventId = -1;
+                byte[] inner = null;
+                for (final XWatchProtocol.Field fld : XWatchProtocol.parse(f.payload)) {
+                    if (fld.number == 1 && fld.isVarint()) {
+                        eventId = fld.value;
+                    } else if (fld.number == 2 && !fld.isVarint()) {
+                        inner = fld.data;
+                    }
+                }
+                long value = -1;
+                if (inner != null) {
+                    try {
+                        for (final XWatchProtocol.Field x : XWatchProtocol.parse(inner)) {
+                            if (x.number == 1 && x.isVarint()) {
+                                value = x.value;
+                                break;
+                            }
+                        }
+                    } catch (final RuntimeException ignored) {
+                        // not a plain message; only the length is logged
+                    }
+                }
+                LOG.info("event {} value {} (inner {} bytes)", eventId, value, inner == null ? 0 : inner.length);
+                break;
+            }
+            case XWatchProtocol.CMD_RESPONSE: {
+                long eventId = -1;
+                long code = 0;
+                for (final XWatchProtocol.Field fld : XWatchProtocol.parse(f.payload)) {
+                    if (fld.number == 1 && fld.isVarint()) {
+                        eventId = fld.value;
+                    } else if (fld.number == 2 && fld.isVarint()) {
+                        code = fld.value;
+                    }
+                }
+                LOG.info("response to cmd 0x{}: code {}", Long.toHexString(eventId), code);
                 break;
             }
             case XWatchProtocol.CMD_STEPS: {
