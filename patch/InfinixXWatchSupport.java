@@ -14,6 +14,7 @@ import android.bluetooth.BluetoothGattCharacteristic;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TimeZone;
@@ -92,6 +93,11 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.versionRequest());
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.batteryRequest());
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.timeSync(nowMillis / 1000, tzValue));
+        // Read-only queries for "today". Answers are decoded and written to the log so the decoders
+        // can be checked on a live watch before anything is stored in the database.
+        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_STEPS, XWatchProtocol.QUERY_TODAY));
+        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_HEART_RATE, XWatchProtocol.QUERY_TODAY));
+        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_SLEEP, XWatchProtocol.QUERY_TODAY));
         builder.setDeviceState(GBDevice.State.INITIALIZED);
         return builder;
     }
@@ -140,6 +146,40 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
                     final GBDeviceEventBatteryInfo event = new GBDeviceEventBatteryInfo();
                     event.level = level;
                     handleGBDeviceEvent(event);
+                }
+                break;
+            }
+            case XWatchProtocol.CMD_STEPS: {
+                for (final XWatchProtocol.IndexEntry e : XWatchProtocol.decodeIndex(f.cmd, f.payload)) {
+                    LOG.info("steps index {}: a={} b={}", new Date(e.date * 1000), e.a, e.b);
+                }
+                for (final XWatchProtocol.StepDay d : XWatchProtocol.decodeSteps(f.payload)) {
+                    LOG.info("steps {}: total {} in {} buckets", new Date(d.date * 1000), d.total(), d.steps.size());
+                }
+                break;
+            }
+            case XWatchProtocol.CMD_HEART_RATE: {
+                for (final XWatchProtocol.IndexEntry e : XWatchProtocol.decodeIndex(f.cmd, f.payload)) {
+                    LOG.info("heart rate index {}: a={} b={}", new Date(e.date * 1000), e.a, e.b);
+                }
+                for (final XWatchProtocol.HeartRateDay d : XWatchProtocol.decodeHeartRate(f.payload)) {
+                    int nonZero = 0;
+                    for (final byte b : d.readings) {
+                        if (b != 0) nonZero++;
+                    }
+                    LOG.info("heart rate {}: {} slots, {} non-zero", new Date(d.date * 1000), d.readings.length, nonZero);
+                }
+                break;
+            }
+            case XWatchProtocol.CMD_SLEEP: {
+                for (final XWatchProtocol.IndexEntry e : XWatchProtocol.decodeIndex(f.cmd, f.payload)) {
+                    LOG.info("sleep index {}: a={} b={}", new Date(e.date * 1000), e.a, e.b);
+                }
+                for (final XWatchProtocol.SleepDay d : XWatchProtocol.decodeSleep(f.payload)) {
+                    for (final XWatchProtocol.SleepSegment s : d.segments) {
+                        LOG.info("sleep {} -> {}: {} min state {} category {}", new Date(s.start * 1000),
+                                new Date(s.end * 1000), s.minutes, s.state, s.category);
+                    }
                 }
                 break;
             }
