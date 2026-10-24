@@ -1,7 +1,7 @@
-# Third inspection: the Colmi ring driver's real file locations (they moved to devices/yawell/ring),
-# how it saves steps/heart rate, how the DAO code is generated, and which dashboard widgets need what.
-# Save as .github/workflows/inspect3-gadgetbridge.yml, then Actions -> "Inspect Gadgetbridge storage code 3" -> Run workflow.
-name: Inspect Gadgetbridge storage code 3
+# Fourth and last inspection: the exact coordinator flags, base classes and dashboard checks
+# needed to store steps / heart rate / sleep so the dashboard and "sync" button work.
+# Save as .github/workflows/inspect4-gadgetbridge.yml, then Actions -> "Inspect Gadgetbridge storage code 4" -> Run workflow.
+name: Inspect Gadgetbridge storage code 4
 
 on:
   workflow_dispatch:
@@ -17,45 +17,40 @@ jobs:
       - name: Collect excerpts
         working-directory: Gadgetbridge
         run: |
-          OUT="$GITHUB_WORKSPACE/gb_inspect3.txt"
+          OUT="$GITHUB_WORKSPACE/gb_inspect4.txt"
           J=app/src/main/java/nodomain/freeyourgadget/gadgetbridge
           GEN=$(find . -name GBDaoGenerator.java | head -1)
-          show() { echo "--- $1 ($(wc -l < "$1") lines)"; head -n "${2:-300}" "$1"; }
+          show() { [ -n "$1" ] && [ -f "$1" ] && { echo "--- $1 ($(wc -l < "$1") lines)"; head -n "${2:-300}" "$1"; }; }
           sec() { echo; echo "=================== $1 ==================="; }
           {
-            sec "files under devices/yawell/ring and service/devices/yawell/ring"
-            find $J/devices/yawell $J/service/devices/yawell -name '*.java' 2>/dev/null | sed "s#$J/##" | sort | head -80
-            sec "ColmiR02Coordinator"
-            f=$(find $J -name ColmiR02Coordinator.java | head -1); [ -n "$f" ] && show "$f" 400
-            sec "ColmiActivitySampleProvider"
-            f=$(find $J -name ColmiActivitySampleProvider.java | head -1); [ -n "$f" ] && show "$f" 250
-            sec "AbstractColmiActivitySample"
-            f=$(find $J -name AbstractColmiActivitySample.java | head -1); [ -n "$f" ] && show "$f" 150
-            sec "other Colmi sample providers (time samples: heart rate etc.)"
-            for f in $(find $J/devices/yawell -name '*SampleProvider.java' | grep -v ColmiActivitySampleProvider | head -4); do show "$f" 120; done
-            sec "GBDaoGenerator: every line mentioning Colmi, with 2 lines of context"
-            grep -n -B2 -A2 'Colmi' "$GEN" | head -160
-            sec "GBDaoGenerator: addCommonActivitySampleProperties and addHeartRateProperties bodies"
-            sed -n '945,975p;1595,1640p' "$GEN"
-            sec "how DAO classes are produced"
-            grep -rn -i 'daogenerator' --include='*.gradle' --include='*.kts' --include='*.toml' . | head -12
-            echo "generated DAO files tracked in git: $(git ls-files | grep -c 'ColmiActivitySampleDao')"
-            echo "entities dir (hand-written files):"; ls $J/entities | head -40
-            sec "Colmi support class: where samples are saved"
-            for f in $(find $J/service/devices/yawell -name '*Support.java' | head -2); do
-              echo "--- $f"
-              grep -n -E 'DBHandler|acquireDB|getSampleProvider|persist|addSample|addGBActivitySample|insertOrReplace|new Colmi[A-Za-z]*Sample|setTimestamp|setSteps|setHeartRate' "$f" | head -50
-            done
-            sec "DeviceCoordinator: every method mentioning SampleProvider"
-            grep -n 'SampleProvider' $J/devices/DeviceCoordinator.java | head -30
-            sec "Dashboard widgets: files and the coordinator flags they test"
-            find $J -ipath '*dashboard*' -name '*.java' | sed "s#$J/##" | head -40
-            grep -rhn -o -E 'coordinator\.[a-zA-Z]+\(' $J/activities/dashboard 2>/dev/null | sort | uniq -c | sort -rn | head -30
+            sec "DeviceCoordinator: every 'supports...' method"
+            grep -n -o -E 'boolean supports[A-Za-z0-9]+\(' $J/devices/DeviceCoordinator.java | sort -t: -k1 -n
+            sec "Why the sync button says 'do not support data sync'"
+            grep -rn -B12 -A4 'do not support data sync' app/src/main/java | head -60
+            sec "AbstractYawellRingCoordinator"
+            show "$(find $J -name AbstractYawellRingCoordinator.java | head -1)" 260
+            sec "AbstractDeviceCoordinator: default getSampleProvider and the fetch-related defaults"
+            grep -n -E 'getSampleProvider|supportsActivityTracking|supportsDataFetching|supportsActivityDataFetching|supportsHeartRateMeasurement|supportsSleepMeasurement|supportsStepCounting' $J/impl/*.java $J/devices/AbstractDeviceCoordinator.java 2>/dev/null | head -30
+            sec "AbstractActivitySample (what an entity base class must implement)"
+            show "$J/entities/AbstractActivitySample.java" 200
+            sec "SampleProvider interface"
+            show "$J/devices/SampleProvider.java" 140
+            sec "ColmiHeartRateSampleProvider and AbstractHeartRateSample"
+            show "$(find $J -name ColmiHeartRateSampleProvider.java | head -1)" 110
+            show "$J/entities/AbstractHeartRateSample.java" 60
+            sec "GBDaoGenerator: how sampleProvidersToGenerate is used"
+            grep -n 'sampleProvidersToGenerate' "$GEN" | head -8
+            sec "Which files test the coordinator flags (dashboard and charts)"
+            grep -rln -E 'supportsActivityTracking|supportsHeartRateMeasurement|supportsSleepMeasurement|supportsStepCounting' app/src/main/java | sed "s#app/src/main/java/nodomain/freeyourgadget/gadgetbridge/##" | head -40
+            sec "Lines using those flags inside dashboard/widget code"
+            grep -rn -E 'supportsActivityTracking|supportsHeartRateMeasurement|supportsSleepMeasurement|supportsStepCounting' $J/activities/dashboard $J/activities/charts $J/activities/ControlCenterv2.java 2>/dev/null | head -30
+            sec "Where the dashboard decides what widgets to show"
+            find $J -ipath '*dashboard*' -name '*.java' | head -30
           } > "$OUT" 2>&1
           wc -c "$OUT"
 
       - name: Upload excerpts
         uses: actions/upload-artifact@v4
         with:
-          name: gb-inspect3
-          path: gb_inspect3.txt
+          name: gb-inspect4
+          path: gb_inspect4.txt
