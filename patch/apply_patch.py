@@ -81,7 +81,8 @@ ENTITY_METHODS = '''    private static Entity addInfinixXWatchActivitySample(Sch
         Entity heartRateSample = addEntity(schema, "InfinixXWatchHeartRateSample");
         heartRateSample.implementsSerializable();
         addCommonTimeSampleProperties("AbstractHeartRateSample", heartRateSample, user, device);
-        addHeartRateProperties(heartRateSample);
+        // getter only: the HeartRateSample interface has no setHeartRate(), so a setter @Override would not compile
+        heartRateSample.addIntProperty(SAMPLE_HEART_RATE).notNull().codeBeforeGetter(OVERRIDE);
         return heartRateSample;
     }
 
@@ -121,7 +122,7 @@ def dao_generator(t):
     t = t.replace(definition, ENTITY_METHODS + definition)
 
     # 4) the constants the new code uses must exist
-    for name in ("SAMPLE_RAW_KIND", "SAMPLE_STEPS", "SAMPLE_STRESS", "OVERRIDE"):
+    for name in ("SAMPLE_RAW_KIND", "SAMPLE_STEPS", "SAMPLE_STRESS", "SAMPLE_HEART_RATE", "OVERRIDE"):
         if name not in t:
             raise SystemExit("constant " + name + " not found in GBDaoGenerator")
     return t
