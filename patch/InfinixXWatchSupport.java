@@ -14,6 +14,8 @@ import android.bluetooth.BluetoothGattCharacteristic;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -21,6 +23,18 @@ import java.util.Map;
 import java.util.TimeZone;
 import java.util.UUID;
 
+import nodomain.freeyourgadget.gadgetbridge.GBApplication;
+import nodomain.freeyourgadget.gadgetbridge.database.DBHandler;
+import nodomain.freeyourgadget.gadgetbridge.database.DBHelper;
+import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchHeartRateSampleProvider;
+import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchStressSampleProvider;
+import nodomain.freeyourgadget.gadgetbridge.entities.DaoSession;
+import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchActivitySample;
+import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchActivitySampleDao;
+import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchHeartRateSample;
+import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchStressSample;
+import nodomain.freeyourgadget.gadgetbridge.model.ActivityKind;
+import nodomain.freeyourgadget.gadgetbridge.model.ActivitySample;
 import nodomain.freeyourgadget.gadgetbridge.deviceevents.GBDeviceEventBatteryInfo;
 import nodomain.freeyourgadget.gadgetbridge.deviceevents.GBDeviceEventVersionInfo;
 import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice;
@@ -95,11 +109,14 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.versionRequest());
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.batteryRequest());
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.timeSync(nowMillis / 1000, tzValue));
-        // Read-only queries for "today". Answers are decoded and written to the log so the decoders
-        // can be checked on a live watch before anything is stored in the database.
+        // Read-only queries for "today" and "history". The watch answers each with an index; the
+        // checkpoint reply below makes it send the records, which are then stored for the dashboard.
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_STEPS, XWatchProtocol.QUERY_TODAY));
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_HEART_RATE, XWatchProtocol.QUERY_TODAY));
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_SLEEP, XWatchProtocol.QUERY_TODAY));
+        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_STEPS, XWatchProtocol.QUERY_HISTORY));
+        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_HEART_RATE, XWatchProtocol.QUERY_HISTORY));
+        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_SLEEP, XWatchProtocol.QUERY_HISTORY));
         builder.setDeviceState(GBDevice.State.INITIALIZED);
         return builder;
     }
@@ -133,9 +150,23 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         b.queue();
     }
 
+    /** The "sync" button: ask for today's and the stored history again. */
+    @Override
+    public void onFetchRecordedData(final int dataTypes) {
+        LOG.info("fetch requested (dataTypes={})", dataTypes);
+        final TransactionBuilder b = createTransactionBuilder("fetch history");
+        for (final int query : new int[]{XWatchProtocol.QUERY_TODAY, XWatchProtocol.QUERY_HISTORY}) {
+            b.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_STEPS, query));
+            b.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_HEART_RATE, query));
+            b.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_SLEEP, query));
+        }
+        b.queue();
+    }
+
     private void handleFrame(final UUID source, final XWatchProtocol.Frame f) {
         LOG.debug("{} frame cmd=0x{} flags=0x{} idx={} len={}", source,
                 Integer.toHexString(f.cmd), Integer.toHexString(f.flags), f.idx, f.payload.length);
+
         if (f.cmd == XWatchProtocol.CMD_STEPS || f.cmd == XWatchProtocol.CMD_HEART_RATE || f.cmd == XWatchProtocol.CMD_SLEEP) {
             // The watch first answers a history query with an index (date + sample count). The vendor app then
             // writes back a checkpoint message, after which the watch sends the real records (as seen in the capture).
@@ -145,6 +176,7 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
                 sendFrame("checkpoint 0x" + Integer.toHexString(f.cmd), XWatchProtocol.checkpoint(f.cmd, index));
             }
         }
+
         switch (f.cmd) {
             case XWatchProtocol.CMD_VERSION: {
                 final String version = XWatchProtocol.decodeVersion(f.payload);
@@ -166,31 +198,9 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
                 }
                 break;
             }
-            case XWatchProtocol.CMD_BIND_REPLY: {
-                // Unsolicited events: field 1 = event id, field 2 = a small message whose field 1 is usually the value.
-                long eventId = -1;
-                byte[] inner = null;
-                for (final XWatchProtocol.Field fld : XWatchProtocol.parse(f.payload)) {
-                    if (fld.number == 1 && fld.isVarint()) {
-                        eventId = fld.value;
-                    } else if (fld.number == 2 && !fld.isVarint()) {
-                        inner = fld.data;
-                    }
-                }
-                final StringBuilder desc = new StringBuilder();
-                if (inner != null) {
-                    try {
-                        for (final XWatchProtocol.Field x : XWatchProtocol.parse(inner)) {
-                            desc.append(" f").append(x.number).append('=')
-                                    .append(x.isVarint() ? Long.toString(x.value) : "bytes" + x.data.length);
-                        }
-                    } catch (final RuntimeException ignored) {
-                        desc.append(" (not a plain message, ").append(inner.length).append(" bytes)");
-                    }
-                }
-                LOG.info("event {}:{}", eventId, desc.length() == 0 ? " (empty)" : desc);
+            case XWatchProtocol.CMD_BIND_REPLY:
+                handleEvent(f);
                 break;
-            }
             case XWatchProtocol.CMD_RESPONSE: {
                 long eventId = -1;
                 long code = 0;
@@ -205,31 +215,27 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
                 break;
             }
             case XWatchProtocol.CMD_STEPS: {
-                for (final XWatchProtocol.IndexEntry e : XWatchProtocol.decodeIndex(f.cmd, f.payload)) {
-                    LOG.info("steps index {}: a={} b={}", new Date(e.date * 1000), e.a, e.b);
-                }
-                for (final XWatchProtocol.StepDay d : XWatchProtocol.decodeSteps(f.payload)) {
+                final List<XWatchProtocol.StepDay> days = XWatchProtocol.decodeSteps(f.payload);
+                for (final XWatchProtocol.StepDay d : days) {
                     LOG.info("steps {}: total {} in {} buckets", new Date(d.date * 1000), d.total(), d.steps.size());
                 }
+                saveSteps(days);
                 break;
             }
             case XWatchProtocol.CMD_HEART_RATE: {
-                for (final XWatchProtocol.IndexEntry e : XWatchProtocol.decodeIndex(f.cmd, f.payload)) {
-                    LOG.info("heart rate index {}: a={} b={}", new Date(e.date * 1000), e.a, e.b);
-                }
-                for (final XWatchProtocol.HeartRateDay d : XWatchProtocol.decodeHeartRate(f.payload)) {
+                final List<XWatchProtocol.HeartRateDay> days = XWatchProtocol.decodeHeartRate(f.payload);
+                for (final XWatchProtocol.HeartRateDay d : days) {
                     int nonZero = 0;
                     for (final byte b : d.readings) {
                         if (b != 0) nonZero++;
                     }
                     LOG.info("heart rate {}: {} slots, {} non-zero", new Date(d.date * 1000), d.readings.length, nonZero);
                 }
+                saveHeartRate(days);
                 break;
             }
             case XWatchProtocol.CMD_SLEEP: {
-                for (final XWatchProtocol.IndexEntry e : XWatchProtocol.decodeIndex(f.cmd, f.payload)) {
-                    LOG.info("sleep index {}: a={} b={}", new Date(e.date * 1000), e.a, e.b);
-                }
+                // Decoded and logged only; sleep storage comes later.
                 for (final XWatchProtocol.SleepDay d : XWatchProtocol.decodeSleep(f.payload)) {
                     for (final XWatchProtocol.SleepSegment s : d.segments) {
                         LOG.info("sleep {} -> {}: {} min state {} category {}", new Date(s.start * 1000),
@@ -239,9 +245,185 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
                 break;
             }
             default:
-                // Includes the unsolicited 0x91 stream seen on CHAR_SECONDARY.
                 LOG.debug("cmd 0x{} payload {}", Integer.toHexString(f.cmd), GB.hexdump(f.payload));
         }
+    }
+
+    // ---------------------------------------------------------------- unsolicited events (cmd 0x91)
+
+    private static final long EVENT_HEART_RATE_TEST = 2002;
+    private static final long EVENT_STRESS_TEST = 2021;
+    /** The watch sends each result twice a few seconds apart. */
+    private static final long DUPLICATE_WINDOW_MS = 30_000L;
+
+    private long lastHeartRateMillis;
+    private long lastHeartRateValue = -1;
+    private long lastStressMillis;
+    private long lastStressValue = -1;
+
+    private void handleEvent(final XWatchProtocol.Frame f) {
+        long eventId = -1;
+        byte[] inner = null;
+        for (final XWatchProtocol.Field fld : XWatchProtocol.parse(f.payload)) {
+            if (fld.number == 1 && fld.isVarint()) {
+                eventId = fld.value;
+            } else if (fld.number == 2 && !fld.isVarint()) {
+                inner = fld.data;
+            }
+        }
+        long status = -1;
+        long value = -1;
+        final StringBuilder desc = new StringBuilder();
+        if (inner != null) {
+            try {
+                for (final XWatchProtocol.Field x : XWatchProtocol.parse(inner)) {
+                    desc.append(" f").append(x.number).append('=')
+                            .append(x.isVarint() ? Long.toString(x.value) : "bytes" + x.data.length);
+                    if (x.isVarint() && x.number == 1) status = x.value;
+                    if (x.isVarint() && x.number == 2) value = x.value;
+                }
+            } catch (final RuntimeException ignored) {
+                desc.append(" (not a plain message, ").append(inner.length).append(" bytes)");
+            }
+        }
+        LOG.info("event {}:{}", eventId, desc.length() == 0 ? " (empty)" : desc);
+
+        final long now = System.currentTimeMillis();
+        if (eventId == EVENT_HEART_RATE_TEST && status == 1 && value >= 30 && value <= 250) {
+            if (value != lastHeartRateValue || now - lastHeartRateMillis > DUPLICATE_WINDOW_MS) {
+                saveManualHeartRate((int) value, now);
+            }
+            lastHeartRateValue = value;
+            lastHeartRateMillis = now;
+        } else if (eventId == EVENT_STRESS_TEST && status == 1 && value >= 0 && value <= 100) {
+            if (value != lastStressValue || now - lastStressMillis > DUPLICATE_WINDOW_MS) {
+                saveStress((int) value, now);
+            }
+            lastStressValue = value;
+            lastStressMillis = now;
+        }
+    }
+
+    // ---------------------------------------------------------------- storage
+
+    private void saveManualHeartRate(final int bpm, final long timestampMillis) {
+        try (DBHandler handler = GBApplication.acquireDB()) {
+            final InfinixXWatchHeartRateSampleProvider provider =
+                    new InfinixXWatchHeartRateSampleProvider(getDevice(), handler.getDaoSession());
+            final InfinixXWatchHeartRateSample sample = new InfinixXWatchHeartRateSample();
+            sample.setTimestamp(timestampMillis);
+            sample.setHeartRate(bpm);
+            final List<InfinixXWatchHeartRateSample> list = new ArrayList<>();
+            list.add(sample);
+            provider.persistSamples(list, getContext());
+            LOG.info("saved manual heart rate {} bpm", bpm);
+        } catch (final Exception e) {
+            LOG.error("failed to save manual heart rate", e);
+        }
+    }
+
+    private void saveStress(final int level, final long timestampMillis) {
+        try (DBHandler handler = GBApplication.acquireDB()) {
+            final InfinixXWatchStressSampleProvider provider =
+                    new InfinixXWatchStressSampleProvider(getDevice(), handler.getDaoSession());
+            final InfinixXWatchStressSample sample = new InfinixXWatchStressSample();
+            sample.setTimestamp(timestampMillis);
+            sample.setStress(level);
+            final List<InfinixXWatchStressSample> list = new ArrayList<>();
+            list.add(sample);
+            provider.persistSamples(list, getContext());
+            LOG.info("saved stress level {}", level);
+        } catch (final Exception e) {
+            LOG.error("failed to save stress level", e);
+        }
+    }
+
+    private void saveSteps(final List<XWatchProtocol.StepDay> days) {
+        if (days.isEmpty()) {
+            return;
+        }
+        final int now = (int) (System.currentTimeMillis() / 1000);
+        try (DBHandler handler = GBApplication.acquireDB()) {
+            final DaoSession session = handler.getDaoSession();
+            final long deviceId = DBHelper.getDevice(getDevice(), session).getId();
+            final long userId = DBHelper.getUser(session).getId();
+            final InfinixXWatchActivitySampleDao dao = session.getInfinixXWatchActivitySampleDao();
+            int saved = 0;
+            for (final XWatchProtocol.StepDay d : days) {
+                if (d.steps.isEmpty()) {
+                    continue;
+                }
+                final int bucketSeconds = 86400 / d.steps.size();
+                for (int i = 0; i < d.steps.size(); i++) {
+                    final int ts = (int) d.date + i * bucketSeconds;
+                    if (ts > now) {
+                        break; // future bucket of today
+                    }
+                    upsert(dao, deviceId, userId, ts, d.steps.get(i), null);
+                    saved++;
+                }
+            }
+            LOG.info("saved {} step samples", saved);
+        } catch (final Exception e) {
+            LOG.error("failed to save steps", e);
+        }
+    }
+
+    private void saveHeartRate(final List<XWatchProtocol.HeartRateDay> days) {
+        if (days.isEmpty()) {
+            return;
+        }
+        final int now = (int) (System.currentTimeMillis() / 1000);
+        try (DBHandler handler = GBApplication.acquireDB()) {
+            final DaoSession session = handler.getDaoSession();
+            final long deviceId = DBHelper.getDevice(getDevice(), session).getId();
+            final long userId = DBHelper.getUser(session).getId();
+            final InfinixXWatchActivitySampleDao dao = session.getInfinixXWatchActivitySampleDao();
+            int saved = 0;
+            for (final XWatchProtocol.HeartRateDay d : days) {
+                final int interval = d.intervalMinutes > 0 ? d.intervalMinutes : 5;
+                for (int i = 0; i < d.readings.length; i++) {
+                    final int bpm = d.readings[i] & 0xFF;
+                    if (bpm == 0 || bpm > 220) {
+                        continue; // 0 = no reading; larger values are not plausible heart rates
+                    }
+                    final int ts = (int) d.date + i * interval * 60;
+                    if (ts > now) {
+                        break;
+                    }
+                    upsert(dao, deviceId, userId, ts, null, bpm);
+                    saved++;
+                }
+            }
+            LOG.info("saved {} heart rate samples", saved);
+        } catch (final Exception e) {
+            LOG.error("failed to save heart rate", e);
+        }
+    }
+
+    /** Steps and heart rate can land on the same timestamp, so update an existing row instead of replacing it. */
+    private static void upsert(final InfinixXWatchActivitySampleDao dao, final long deviceId, final long userId,
+                               final int timestamp, final Integer steps, final Integer heartRate) {
+        InfinixXWatchActivitySample sample = dao.queryBuilder()
+                .where(InfinixXWatchActivitySampleDao.Properties.Timestamp.eq(timestamp),
+                        InfinixXWatchActivitySampleDao.Properties.DeviceId.eq(deviceId))
+                .unique();
+        if (sample == null) {
+            sample = new InfinixXWatchActivitySample();
+            sample.setTimestamp(timestamp);
+            sample.setDeviceId(deviceId);
+            sample.setUserId(userId);
+            sample.setRawKind(ActivityKind.NOT_MEASURED.getCode());
+            sample.setSteps(ActivitySample.NOT_MEASURED);
+            sample.setHeartRate(ActivitySample.NOT_MEASURED);
+        }
+        if (steps != null) {
+            sample.setSteps(steps);
+        }
+        if (heartRate != null) {
+            sample.setHeartRate(heartRate);
+        }
+        dao.insertOrReplace(sample);
     }
 
     // ---------------------------------------------------------------- DeviceSupport boilerplate
