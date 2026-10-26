@@ -20,16 +20,19 @@ import de.greenrobot.dao.Property;
 import nodomain.freeyourgadget.gadgetbridge.R;
 import nodomain.freeyourgadget.gadgetbridge.devices.AbstractBLEDeviceCoordinator;
 import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchHeartRateSampleProvider;
+import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchSpo2SampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchStressSampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.devices.SampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.devices.TimeSampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.entities.DaoSession;
 import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchActivitySampleDao;
 import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchHeartRateSampleDao;
+import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchSpo2SampleDao;
 import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchStressSampleDao;
 import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice;
 import nodomain.freeyourgadget.gadgetbridge.model.ActivitySample;
 import nodomain.freeyourgadget.gadgetbridge.model.HeartRateSample;
+import nodomain.freeyourgadget.gadgetbridge.model.Spo2Sample;
 import nodomain.freeyourgadget.gadgetbridge.model.StressSample;
 import nodomain.freeyourgadget.gadgetbridge.service.DeviceSupport;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.infinix.InfinixXWatchSupport;
@@ -85,6 +88,11 @@ public class InfinixXWatchCoordinator extends AbstractBLEDeviceCoordinator {
         return true;
     }
 
+    @Override
+    public boolean supportsSpo2(@NonNull final GBDevice device) {
+        return true;
+    }
+
     /** Sleep is decoded but not stored yet. */
     @Override
     public boolean supportsSleepMeasurement(@NonNull final GBDevice device) {
@@ -108,13 +116,19 @@ public class InfinixXWatchCoordinator extends AbstractBLEDeviceCoordinator {
         return new InfinixXWatchHeartRateSampleProvider(device, session);
     }
 
+    @Override
+    public TimeSampleProvider<? extends Spo2Sample> getSpo2SampleProvider(@NonNull final GBDevice device, @NonNull final DaoSession session) {
+        return new InfinixXWatchSpo2SampleProvider(device, session);
+    }
+
     /** Lets Gadgetbridge delete this device's samples when the device is removed. */
     @Override
     public Map<AbstractDao<?, ?>, Property> getAllDeviceDao(@NonNull final DaoSession session) {
-        final Map<AbstractDao<?, ?>, Property> map = new HashMap<>(3);
+        final Map<AbstractDao<?, ?>, Property> map = new HashMap<>(4);
         map.put(session.getInfinixXWatchActivitySampleDao(), InfinixXWatchActivitySampleDao.Properties.DeviceId);
         map.put(session.getInfinixXWatchHeartRateSampleDao(), InfinixXWatchHeartRateSampleDao.Properties.DeviceId);
         map.put(session.getInfinixXWatchStressSampleDao(), InfinixXWatchStressSampleDao.Properties.DeviceId);
+        map.put(session.getInfinixXWatchSpo2SampleDao(), InfinixXWatchSpo2SampleDao.Properties.DeviceId);
         return map;
     }
 }

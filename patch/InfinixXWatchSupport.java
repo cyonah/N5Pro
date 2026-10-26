@@ -27,11 +27,13 @@ import nodomain.freeyourgadget.gadgetbridge.GBApplication;
 import nodomain.freeyourgadget.gadgetbridge.database.DBHandler;
 import nodomain.freeyourgadget.gadgetbridge.database.DBHelper;
 import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchHeartRateSampleProvider;
+import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchSpo2SampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchStressSampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.entities.DaoSession;
 import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchActivitySample;
 import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchActivitySampleDao;
 import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchHeartRateSample;
+import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchSpo2Sample;
 import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchStressSample;
 import nodomain.freeyourgadget.gadgetbridge.model.ActivityKind;
 import nodomain.freeyourgadget.gadgetbridge.model.ActivitySample;
@@ -251,11 +253,19 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
 
     // ---------------------------------------------------------------- unsolicited events (cmd 0x91)
 
+    /** Sent about every 20 s with one value; it matched the battery reply (57 and 57), so it is treated as battery level. */
+    private static final long EVENT_BATTERY_LEVEL = 2001;
+    /**
+     * Blood-oxygen test. Inner message: start = {2: {1: time}}; result = {1: 1, 2: {1: time, 2: percent}},
+     * confirmed with a watch reading of 97 % (bytes 0x61).
+     */
+    private static final long EVENT_BLOOD_OXYGEN_TEST = 2003;
     private static final long EVENT_HEART_RATE_TEST = 2002;
     private static final long EVENT_STRESS_TEST = 2021;
-    /** The watch sends each result twice a few seconds apart. */
-    private static final long DUPLICATE_WINDOW_MS = 30_000L;
+    /** The watch repeats each result, once about 5 s and once about 30 s later. */
+    private static final long DUPLICATE_WINDOW_MS = 120_000L;
 
+    private long lastSpo2Timestamp = -1;
     private long lastHeartRateMillis;
     private long lastHeartRateValue = -1;
     private long lastStressMillis;
@@ -288,6 +298,45 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         }
         LOG.info("event {}:{}", eventId, desc.length() == 0 ? " (empty)" : desc);
 
+        if (eventId == EVENT_BATTERY_LEVEL && status >= 0 && status <= 100) {
+            final GBDeviceEventBatteryInfo battery = new GBDeviceEventBatteryInfo();
+            battery.level = (int) status;
+            handleGBDeviceEvent(battery);
+            return;
+        }
+
+        if (eventId == EVENT_BLOOD_OXYGEN_TEST && inner != null) {
+            try {
+                long testStatus = -1;
+                byte[] result = null;
+                for (final XWatchProtocol.Field x : XWatchProtocol.parse(inner)) {
+                    if (x.number == 1 && x.isVarint()) {
+                        testStatus = x.value;
+                    } else if (x.number == 2 && !x.isVarint()) {
+                        result = x.data;
+                    }
+                }
+                if (testStatus == 1 && result != null) {
+                    long time = -1;
+                    long percent = -1;
+                    for (final XWatchProtocol.Field y : XWatchProtocol.parse(result)) {
+                        if (y.number == 1 && y.isVarint()) {
+                            time = y.value;
+                        } else if (y.number == 2 && y.isVarint()) {
+                            percent = y.value;
+                        }
+                    }
+                    if (percent >= 50 && percent <= 100 && time > 0 && time != lastSpo2Timestamp) {
+                        lastSpo2Timestamp = time;
+                        saveSpo2((int) percent, time * 1000L);
+                    }
+                }
+            } catch (final RuntimeException e) {
+                LOG.warn("could not read blood oxygen event", e);
+            }
+            return;
+        }
+
         final long now = System.currentTimeMillis();
         if (eventId == EVENT_HEART_RATE_TEST && status == 1 && value >= 30 && value <= 250) {
             if (value != lastHeartRateValue || now - lastHeartRateMillis > DUPLICATE_WINDOW_MS) {
@@ -319,6 +368,22 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
             LOG.info("saved manual heart rate {} bpm", bpm);
         } catch (final Exception e) {
             LOG.error("failed to save manual heart rate", e);
+        }
+    }
+
+    private void saveSpo2(final int percent, final long timestampMillis) {
+        try (DBHandler handler = GBApplication.acquireDB()) {
+            final InfinixXWatchSpo2SampleProvider provider =
+                    new InfinixXWatchSpo2SampleProvider(getDevice(), handler.getDaoSession());
+            final InfinixXWatchSpo2Sample sample = new InfinixXWatchSpo2Sample();
+            sample.setTimestamp(timestampMillis);
+            sample.setSpo2(percent);
+            final List<InfinixXWatchSpo2Sample> list = new ArrayList<>();
+            list.add(sample);
+            provider.persistSamples(list, getContext());
+            LOG.info("saved blood oxygen {} %", percent);
+        } catch (final Exception e) {
+            LOG.error("failed to save blood oxygen", e);
         }
     }
 

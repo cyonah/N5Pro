@@ -86,6 +86,13 @@ ENTITY_METHODS = '''    private static Entity addInfinixXWatchActivitySample(Sch
         return heartRateSample;
     }
 
+    private static Entity addInfinixXWatchSpo2Sample(Schema schema, Entity user, Entity device) {
+        Entity spo2sample = addEntity(schema, "InfinixXWatchSpo2Sample");
+        addCommonTimeSampleProperties("AbstractSpo2Sample", spo2sample, user, device);
+        spo2sample.addIntProperty(SAMPLE_SPO2).notNull().codeBeforeGetter(OVERRIDE);
+        return spo2sample;
+    }
+
     private static Entity addInfinixXWatchStressSample(Schema schema, Entity user, Entity device) {
         Entity stressSample = addEntity(schema, "InfinixXWatchStressSample");
         addCommonTimeSampleProperties("AbstractStressSample", stressSample, user, device);
@@ -98,6 +105,7 @@ ENTITY_METHODS = '''    private static Entity addInfinixXWatchActivitySample(Sch
 ENTITY_CALLS = '''        addInfinixXWatchActivitySample(schema, user, device);
         sampleProvidersToGenerate.add(addInfinixXWatchHeartRateSample(schema, user, device));
         sampleProvidersToGenerate.add(addInfinixXWatchStressSample(schema, user, device));
+        sampleProvidersToGenerate.add(addInfinixXWatchSpo2Sample(schema, user, device));
 '''
 
 
@@ -122,7 +130,7 @@ def dao_generator(t):
     t = t.replace(definition, ENTITY_METHODS + definition)
 
     # 4) the constants the new code uses must exist
-    for name in ("SAMPLE_RAW_KIND", "SAMPLE_STEPS", "SAMPLE_STRESS", "SAMPLE_HEART_RATE", "OVERRIDE"):
+    for name in ("SAMPLE_RAW_KIND", "SAMPLE_STEPS", "SAMPLE_STRESS", "SAMPLE_HEART_RATE", "SAMPLE_SPO2", "OVERRIDE"):
         if name not in t:
             raise SystemExit("constant " + name + " not found in GBDaoGenerator")
     return t
