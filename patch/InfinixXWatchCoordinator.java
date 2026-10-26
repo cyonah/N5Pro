@@ -10,12 +10,7 @@ package nodomain.freeyourgadget.gadgetbridge.devices.infinix;
 
 import androidx.annotation.NonNull;
 
-import java.util.HashMap;
-import java.util.Map;
 import java.util.regex.Pattern;
-
-import de.greenrobot.dao.AbstractDao;
-import de.greenrobot.dao.Property;
 
 import nodomain.freeyourgadget.gadgetbridge.R;
 import nodomain.freeyourgadget.gadgetbridge.devices.AbstractBLEDeviceCoordinator;
@@ -25,10 +20,6 @@ import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchStressSamplePro
 import nodomain.freeyourgadget.gadgetbridge.devices.SampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.devices.TimeSampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.entities.DaoSession;
-import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchActivitySampleDao;
-import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchHeartRateSampleDao;
-import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchSpo2SampleDao;
-import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchStressSampleDao;
 import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice;
 import nodomain.freeyourgadget.gadgetbridge.model.ActivitySample;
 import nodomain.freeyourgadget.gadgetbridge.model.HeartRateSample;
@@ -119,16 +110,5 @@ public class InfinixXWatchCoordinator extends AbstractBLEDeviceCoordinator {
     @Override
     public TimeSampleProvider<? extends Spo2Sample> getSpo2SampleProvider(@NonNull final GBDevice device, @NonNull final DaoSession session) {
         return new InfinixXWatchSpo2SampleProvider(device, session);
-    }
-
-    /** Lets Gadgetbridge delete this device's samples when the device is removed. */
-    @Override
-    public Map<AbstractDao<?, ?>, Property> getAllDeviceDao(@NonNull final DaoSession session) {
-        final Map<AbstractDao<?, ?>, Property> map = new HashMap<>(4);
-        map.put(session.getInfinixXWatchActivitySampleDao(), InfinixXWatchActivitySampleDao.Properties.DeviceId);
-        map.put(session.getInfinixXWatchHeartRateSampleDao(), InfinixXWatchHeartRateSampleDao.Properties.DeviceId);
-        map.put(session.getInfinixXWatchStressSampleDao(), InfinixXWatchStressSampleDao.Properties.DeviceId);
-        map.put(session.getInfinixXWatchSpo2SampleDao(), InfinixXWatchSpo2SampleDao.Properties.DeviceId);
-        return map;
     }
 }
