@@ -1,1 +1,60 @@
+# Fifth inspection: how Gadgetbridge installs a file onto a device (the hook needed to send a watch-face file).
+# Save as .github/workflows/inspect5-gadgetbridge.yml, then Actions -> "Inspect Gadgetbridge install code" -> Run workflow.
+name: Inspect Gadgetbridge install code
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Get Gadgetbridge source
+        run: git clone --depth 1 https://codeberg.org/Freeyourgadget/Gadgetbridge.git
+
+      - name: Collect excerpts
+        working-directory: Gadgetbridge
+        run: |
+          set +e   # a missing file must not abort the whole collection
+          OUT="$GITHUB_WORKSPACE/gb_inspect5.txt"
+          J=app/src/main/java/nodomain/freeyourgadget/gadgetbridge
+          show() {
+            if [ -n "$1" ] && [ -f "$1" ]; then
+              echo "--- $1 ($(wc -l < "$1") lines)"; head -n "${2:-300}" "$1"
+            else
+              echo "--- (file not found: $1)"
+            fi
+            return 0
+          }
+          sec() { echo; echo "=================== $1 ==================="; }
+          {
+            sec "commit"; git log -1 --format='%H %ad %s'
+            sec "DeviceCoordinator: install / app / watchface related methods"
+            grep -n -E 'InstallHandler|supportsAppsManagement|supportsWatchfaces|supportsFlashing|getAppsManagement|supportsInstall|WatchFace|Watchface' $J/devices/DeviceCoordinator.java | head -30
+            sec "InstallHandler interface"
+            show "$(find $J -name InstallHandler.java | head -1)" 120
+            sec "onInstallApp declarations and callers"
+            grep -rn 'onInstallApp' app/src/main/java | head -20
+            sec "getInstallHandler callers"
+            grep -rn 'getInstallHandler' app/src/main/java | grep -v 'public InstallHandler' | head -12
+            sec "all InstallHandler implementations (smallest first)"
+            for f in $(grep -rl 'implements InstallHandler' app/src/main/java); do echo "$(wc -l < "$f") $f"; done | sort -n | head -14
+            sec "the two smallest implementations in full"
+            for f in $(for g in $(grep -rl 'implements InstallHandler' app/src/main/java); do echo "$(wc -l < "$g") $g"; done | sort -n | head -2 | awk '{print $2}'); do show "$f" 220; done
+            sec "a support class that installs a watch face or file: onInstallApp bodies of the two smallest"
+            for f in $(grep -rl 'public void onInstallApp' app/src/main/java | xargs wc -l | sort -n | grep -v total | head -3 | awk '{print $2}'); do echo "--- $f"; grep -n -B1 -A30 'public void onInstallApp' "$f" | head -60; done
+            sec "AndroidManifest: the file-opening activity and its filters"
+            grep -n -E 'FwAppInstallerActivity|InstallActivity|pathPattern|pathSuffix|mimeType' app/src/main/AndroidManifest.xml | head -60
+            sec "Where install handlers get chosen for a dropped file"
+            for f in $(grep -rl 'getInstallHandler' app/src/main/java | grep -i -E 'Installer|Install' | head -2); do show "$f" 220; done
+          } > "$OUT" 2>&1
+          wc -c "$OUT"
+          exit 0
+
+      - name: Upload excerpts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gb-inspect5
+          path: gb_inspect5.txt
 
