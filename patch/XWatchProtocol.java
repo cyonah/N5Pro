@@ -39,6 +39,18 @@ public final class XWatchProtocol {
     public static final int CMD_BIND_REPLY = 0x91;
     public static final int CMD_RESPONSE = 0x92;
 
+    /** Watch-face / file transfer (decoded from a full capture). */
+    public static final int CMD_FILE_START = 0x70;
+    public static final int CMD_FILE_DATA = 0x71;
+    /** Empty request; the watch answers with the active face: {1: type, 2: index, 3: round}. */
+    public static final int CMD_DIAL_QUERY = 0xA7;
+    public static final int FILE_TYPE_DOWNLOADED_FACE = 2;
+    /** One block = eight 504-byte frames plus one 64-byte frame; the watch confirms every block. */
+    public static final int FILE_BLOCK_SIZE = 4096;
+    public static final int FILE_FRAME_PAYLOAD = 504;
+    public static final int FILE_BLOCK_TAIL = 64;
+    public static final int MAX_FACE_FILE_SIZE = 4 * 1024 * 1024;
+
     public static final int QUERY_TODAY = 0;
     public static final int QUERY_HISTORY = 1;
 
@@ -292,6 +304,78 @@ public final class XWatchProtocol {
         writeVarint(o, id.length);
         o.write(id, 0, id.length);
         return buildFrame(CMD_BIND, o.toByteArray());
+    }
+
+    // ------------------------------------------------------- file transfer
+
+    /** Start message: {1: name, 2: size, 3: type, 4: 0, 5: 0} (the zero fields are present in the capture). */
+    public static byte[] fileStart(final String name, final int size, final int type) {
+        final byte[] n = name.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        final ByteArrayOutputStream o = new ByteArrayOutputStream();
+        o.write(0x0A);
+        writeVarint(o, n.length);
+        o.write(n, 0, n.length);
+        o.write(0x10);
+        writeVarint(o, size);
+        o.write(0x18);
+        writeVarint(o, type);
+        o.write(0x20);
+        o.write(0x00);
+        o.write(0x28);
+        o.write(0x00);
+        return buildFrame(CMD_FILE_START, o.toByteArray());
+    }
+
+    /**
+     * The frames of the block that starts at {@code offset}. A full block is eight 504-byte frames (flag
+     * "continuation") and one 64-byte frame; a shorter last block is cut into frames of at most 504 bytes.
+     * Reproduces the sequence seen in the capture byte for byte.
+     */
+    public static List<byte[]> faceBlockFrames(final byte[] data, final int offset) {
+        final int blockLen = Math.min(FILE_BLOCK_SIZE, data.length - offset);
+        final List<int[]> parts = new ArrayList<>();   // {start, length}
+        int pos = offset;
+        int left = blockLen;
+        if (blockLen == FILE_BLOCK_SIZE) {
+            for (int i = 0; i < 8; i++) {
+                parts.add(new int[]{pos, FILE_FRAME_PAYLOAD});
+                pos += FILE_FRAME_PAYLOAD;
+            }
+            parts.add(new int[]{pos, FILE_BLOCK_TAIL});
+        } else {
+            while (left > 0) {
+                final int n = Math.min(FILE_FRAME_PAYLOAD, left);
+                parts.add(new int[]{pos, n});
+                pos += n;
+                left -= n;
+            }
+        }
+        final List<byte[]> frames = new ArrayList<>();
+        for (int i = 0; i < parts.size(); i++) {
+            final int[] part = parts.get(i);
+            final boolean last = i == parts.size() - 1;
+            frames.add(buildFrame(CMD_FILE_DATA, last ? 0x00 : 0x02, i,
+                    Arrays.copyOfRange(data, part[0], part[0] + part[1])));
+        }
+        return frames;
+    }
+
+    /** Returns null if the data looks like a watch-face file this watch accepted, otherwise the reason it does not. */
+    public static String checkWatchFaceFile(final byte[] data) {
+        if (data == null || data.length < 64) {
+            return "file is too small";
+        }
+        if (data.length > MAX_FACE_FILE_SIZE) {
+            return "file is too large";
+        }
+        if (data[0] != 'W' || data[1] != 'F' || data[2] != 'B' || data[3] != 0) {
+            return "file does not start with the WFB marker";
+        }
+        final long declared = (data[8] & 0xFFL) | ((data[9] & 0xFFL) << 8) | ((data[10] & 0xFFL) << 16) | ((data[11] & 0xFFL) << 24);
+        if (declared != data.length) {
+            return "size in the file header (" + declared + ") does not match the file (" + data.length + " bytes)";
+        }
+        return null;
     }
 
     // -------------------------------------------------------------- replies
