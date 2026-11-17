@@ -8,12 +8,17 @@
     (at your option) any later version. */
 package nodomain.freeyourgadget.gadgetbridge.devices.infinix;
 
+import android.content.Context;
+import android.net.Uri;
+import android.os.Bundle;
+
 import androidx.annotation.NonNull;
 
 import java.util.regex.Pattern;
 
 import nodomain.freeyourgadget.gadgetbridge.R;
 import nodomain.freeyourgadget.gadgetbridge.devices.AbstractBLEDeviceCoordinator;
+import nodomain.freeyourgadget.gadgetbridge.devices.InstallHandler;
 import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchHeartRateSampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchSpo2SampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchStressSampleProvider;
@@ -55,6 +60,13 @@ public class InfinixXWatchCoordinator extends AbstractBLEDeviceCoordinator {
     @Override
     public DeviceKind getDeviceKind(@NonNull final GBDevice device) {
         return DeviceKind.WATCH;
+    }
+
+    /** Offers watch-face files (.wf) for installation; every other file is declined. */
+    @Override
+    public InstallHandler findInstallHandler(final Uri uri, @NonNull final Bundle options, @NonNull final Context context) {
+        final InfinixXWatchInstallHandler handler = new InfinixXWatchInstallHandler(uri, context);
+        return handler.isValid() ? handler : null;
     }
 
     // ---------------------------------------------------------------- what the watch can do (dashboard)
