@@ -9,16 +9,28 @@
 package nodomain.freeyourgadget.gadgetbridge.service.devices.infinix;
 
 import android.bluetooth.BluetoothGatt;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.bluetooth.BluetoothGattCharacteristic;
+
+import androidx.annotation.NonNull;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.UUID;
@@ -44,6 +56,7 @@ import nodomain.freeyourgadget.gadgetbridge.service.btle.AbstractBTLESingleDevic
 import nodomain.freeyourgadget.gadgetbridge.service.btle.GattService;
 import nodomain.freeyourgadget.gadgetbridge.service.btle.TransactionBuilder;
 import nodomain.freeyourgadget.gadgetbridge.util.GB;
+import nodomain.freeyourgadget.gadgetbridge.util.UriHelper;
 
 /**
  * Infinix XWatch N5 Pro support.
@@ -105,6 +118,7 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         // which is what the capture showed.
         LOG.info("initializeDevice: queueing notify, version, battery, time sync (tz value {}), history queries", tzValue);
         builder.setDeviceState(GBDevice.State.INITIALIZING);
+        resetFaceTransfer();
         builder.notify(XWatchProtocol.CHAR_COMMAND, true);
         builder.notify(XWatchProtocol.CHAR_SECONDARY, true);
         builder.sleep(NOTIFY_SETTLE_MS);
@@ -119,6 +133,7 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_STEPS, XWatchProtocol.QUERY_HISTORY));
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_HEART_RATE, XWatchProtocol.QUERY_HISTORY));
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_SLEEP, XWatchProtocol.QUERY_HISTORY));
+        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.buildFrame(XWatchProtocol.CMD_DIAL_QUERY, new byte[0]));
         builder.setDeviceState(GBDevice.State.INITIALIZED);
         return builder;
     }
@@ -214,6 +229,20 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
                     }
                 }
                 LOG.info("response to cmd 0x{}: code {}", Long.toHexString(eventId), code);
+                onFileTransferAck(eventId, code);
+                break;
+            }
+            case XWatchProtocol.CMD_DIAL_QUERY: {
+                long type = -1;
+                long index = -1;
+                long round = -1;
+                for (final XWatchProtocol.Field fld : XWatchProtocol.parse(f.payload)) {
+                    if (!fld.isVarint()) continue;
+                    if (fld.number == 1) type = fld.value;
+                    if (fld.number == 2) index = fld.value;
+                    if (fld.number == 3) round = fld.value;
+                }
+                LOG.info("active watch face: type {} (1 = built in, 2 = downloaded) index {} round {}", type, index, round);
                 break;
             }
             case XWatchProtocol.CMD_STEPS: {
@@ -489,6 +518,140 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
             sample.setHeartRate(heartRate);
         }
         dao.insertOrReplace(sample);
+    }
+
+    // ---------------------------------------------------------------- watch-face install
+    //
+    // Sequence copied from a full capture of the vendor app: a start message (file name, size, type), then 4 KB
+    // blocks. After the start message and after every block the watch confirms with a 0x92 response; the next block
+    // is only sent after that. A shorter last block ends the transfer. Safeguards: only files that start with the
+    // WFB marker and whose header size matches are sent, and a missing confirmation aborts the transfer.
+
+    private static final long ACK_TIMEOUT_MS = 15_000L;
+
+    private final Handler timeoutHandler = new Handler(Looper.getMainLooper());
+    private final Runnable ackTimeout = new Runnable() {
+        @Override
+        public void run() {
+            abortFaceTransfer("the watch did not confirm in time");
+        }
+    };
+    private byte[] faceData;
+    private int faceOffset;
+    private int awaitedAck = -1;
+
+    @Override
+    public void onInstallApp(final Uri uri, @NonNull final Bundle options) {
+        final byte[] data;
+        try (InputStream in = UriHelper.get(uri, getContext()).openInputStream()) {
+            data = readFully(in);
+        } catch (final IOException e) {
+            LOG.error("could not read {}", uri, e);
+            return;
+        }
+        final String problem = XWatchProtocol.checkWatchFaceFile(data);
+        if (problem != null) {
+            LOG.error("refusing to send {}: {}", uri, problem);
+            return;
+        }
+        startFaceTransfer(faceFileName(uri, data), data);
+    }
+
+    private synchronized void startFaceTransfer(final String name, final byte[] data) {
+        if (faceData != null) {
+            LOG.warn("a watch-face transfer is already running");
+            return;
+        }
+        faceData = data;
+        faceOffset = 0;
+        awaitedAck = XWatchProtocol.CMD_FILE_START;
+        LOG.info("starting watch-face transfer: name {} size {}", name, data.length);
+        sendFrame("face start", XWatchProtocol.fileStart(name, data.length, XWatchProtocol.FILE_TYPE_DOWNLOADED_FACE));
+        armTimeout();
+    }
+
+    private synchronized void onFileTransferAck(final long eventId, final long code) {
+        if (faceData == null || eventId != awaitedAck) {
+            return;
+        }
+        timeoutHandler.removeCallbacks(ackTimeout);
+        if (code != 0) {
+            abortFaceTransfer("the watch refused with code " + code);
+            return;
+        }
+        if (eventId == XWatchProtocol.CMD_FILE_DATA && faceOffset >= faceData.length) {
+            LOG.info("watch-face transfer complete ({} bytes)", faceData.length);
+            resetFaceTransfer();
+            // read-only: shows which face is active now
+            sendFrame("face status", XWatchProtocol.buildFrame(XWatchProtocol.CMD_DIAL_QUERY, new byte[0]));
+            return;
+        }
+        sendNextFaceBlock();
+    }
+
+    private void sendNextFaceBlock() {
+        final List<byte[]> frames = XWatchProtocol.faceBlockFrames(faceData, faceOffset);
+        final TransactionBuilder b = createTransactionBuilder("face block at " + faceOffset);
+        for (final byte[] frame : frames) {
+            b.write(XWatchProtocol.CHAR_COMMAND, frame);
+        }
+        b.queue();
+        faceOffset += Math.min(XWatchProtocol.FILE_BLOCK_SIZE, faceData.length - faceOffset);
+        awaitedAck = XWatchProtocol.CMD_FILE_DATA;
+        LOG.info("sent {} of {} bytes", faceOffset, faceData.length);
+        armTimeout();
+    }
+
+    private void armTimeout() {
+        timeoutHandler.removeCallbacks(ackTimeout);
+        timeoutHandler.postDelayed(ackTimeout, ACK_TIMEOUT_MS);
+    }
+
+    private synchronized void abortFaceTransfer(final String reason) {
+        LOG.error("watch-face transfer aborted at {} of {} bytes: {}", faceOffset,
+                faceData == null ? 0 : faceData.length, reason);
+        resetFaceTransfer();
+    }
+
+    private synchronized void resetFaceTransfer() {
+        timeoutHandler.removeCallbacks(ackTimeout);
+        faceData = null;
+        faceOffset = 0;
+        awaitedAck = -1;
+    }
+
+    private static byte[] readFully(final InputStream in) throws IOException {
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        final byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) {
+            out.write(buf, 0, n);
+            if (out.size() > XWatchProtocol.MAX_FACE_FILE_SIZE) {
+                break;
+            }
+        }
+        return out.toByteArray();
+    }
+
+    /** Uses the file's own name if it looks like the store's (32 hex characters + .wf), otherwise the MD5 of the contents. */
+    private static String faceFileName(final Uri uri, final byte[] data) {
+        String last = uri.getLastPathSegment();
+        if (last != null) {
+            last = last.substring(Math.max(last.lastIndexOf('/'), last.lastIndexOf(':')) + 1);
+            if (last.matches("[0-9a-fA-F]{32}\\.wf")) {
+                return last.toLowerCase(Locale.ROOT);
+            }
+        }
+        try {
+            final byte[] md5 = MessageDigest.getInstance("MD5").digest(data);
+            final StringBuilder sb = new StringBuilder();
+            for (final byte b : md5) {
+                sb.append(String.format(Locale.ROOT, "%02x", b));
+            }
+            return sb.append(".wf").toString();
+        } catch (final NoSuchAlgorithmException e) {
+            return "face.wf";
+        }
     }
 
     // ---------------------------------------------------------------- DeviceSupport boilerplate
