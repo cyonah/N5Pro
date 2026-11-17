@@ -147,6 +147,7 @@ def find_generator():
 DESTINATIONS = {
     "InfinixXWatchCoordinator.java": "devices/infinix",
     "InfinixXWatchActivitySampleProvider.java": "devices/infinix",
+    "InfinixXWatchInstallHandler.java": "devices/infinix",
     "AbstractInfinixXWatchActivitySample.java": "entities",
     "InfinixXWatchSupport.java": "service/devices/infinix",
     "XWatchProtocol.java": "service/devices/infinix",
