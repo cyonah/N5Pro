@@ -37,24 +37,50 @@ def edit(path, fn):
 
 def device_type(t):
     imp = "import nodomain.freeyourgadget.gadgetbridge.devices.xwatch.XWatchCoordinator;\n"
-    ent = "    XWATCH(XWatchCoordinator.class),\n"
-    if t.count(imp) != 1 or t.count(ent) != 1:
-        raise SystemExit(
-            "DeviceType anchors not found exactly once "
-            f"(import={t.count(imp)}, entry={t.count(ent)})"
-        )
-    t = t.replace(
-        imp,
-        "import nodomain.freeyourgadget.gadgetbridge.devices.infinix.InfinixXWatchCoordinator;\n" + imp,
-    )
-    return t.replace(ent, "    INFINIX_XWATCH_N5_PRO(InfinixXWatchCoordinator.class),\n" + ent)
+    ours = "import nodomain.freeyourgadget.gadgetbridge.devices.infinix.InfinixXWatchCoordinator;\n"
+    if t.count(imp) == 1:
+        t = t.replace(imp, ours + imp)
+    else:
+        first = re.search(r"^import [^\n]+;\n", t, re.M)
+        if first:
+            t = t[: first.start()] + ours + t[first.start():]
+        else:
+            pkg = re.search(r"^package [^\n]+;\n", t, re.M)
+            if not pkg:
+                raise SystemExit("no package or import line found in DeviceType.java")
+            t = t[: pkg.end()] + "\n" + ours + t[pkg.end():]
+
+    # Clone the existing XWATCH entry so the new entry always has the same shape as the current enum constructor.
+    m = re.search(r"^[ \t]*XWATCH\s*\([^\n]*$", t, re.M)
+    if m and ")" in m.group(0) and "XWatchCoordinator" in m.group(0):
+        line = m.group(0)
+        new = line.replace("XWATCH", "INFINIX_XWATCH_N5_PRO", 1).replace("XWatchCoordinator", "InfinixXWatchCoordinator")
+        new = re.sub(r'"[^"]*"', '"infinix_xwatch_n5_pro"', new, count=1)
+        new = new.rstrip()
+        if new.endswith(";"):
+            new = new[:-1] + ","
+        print("enum entry cloned from:", line.strip())
+        print("                   to:", new.strip())
+        return t[: m.start()] + new + "\n" + t[m.start():]
+
+    # Fallback: put the entry first in the enum.
+    e = re.search(r"public\s+enum\s+DeviceType\b[^{]*\{[ \t]*\n", t)
+    if not e:
+        lines = [l for l in t.splitlines() if "XWATCH" in l or "XWatch" in l]
+        raise SystemExit("could not place the DeviceType entry; lines mentioning XWatch: " + repr(lines[:6]))
+    print("XWATCH entry not found in the usual form; inserting the new entry first in the enum")
+    return t[: e.end()] + "    INFINIX_XWATCH_N5_PRO(InfinixXWatchCoordinator.class),\n" + t[e.end():]
 
 
 def old_xwatch(t):
-    old = 'Pattern.compile("XWatch.*")'
-    if t.count(old) != 1:
-        raise SystemExit(f'old XWatch pattern not found exactly once (found {t.count(old)})')
-    return t.replace(old, 'Pattern.compile("XWatch(?! N5 Pro).*")')
+    m = re.search(r'Pattern\.compile\("(XWatch[^"]*)"\)', t)
+    if not m:
+        lines = [l.strip() for l in t.splitlines() if "Pattern" in l or "XWatch" in l]
+        raise SystemExit("old XWatch name pattern not found; candidate lines: " + repr(lines[:6]))
+    old = m.group(1)
+    new = "XWatch(?! N5 Pro)" + old[len("XWatch"):]
+    print("old XWatch pattern", repr(old), "->", repr(new))
+    return t[: m.start(1)] + new + t[m.end(1):]
 
 
 def strings(t):
@@ -117,17 +143,22 @@ def dao_generator(t):
     t = t.replace(m.group(0), "new Schema(%d," % (int(m.group(1)) + 1), 1)
     print("schema version %s -> %d" % (m.group(1), int(m.group(1)) + 1))
 
-    # 2) entity registrations, placed before the Colmi activity sample registration
-    call = "        addColmiActivitySample(schema, user, device);\n"
-    if t.count(call) != 1:
-        raise SystemExit(f"Colmi registration anchor not found exactly once (found {t.count(call)})")
-    t = t.replace(call, ENTITY_CALLS + call)
+    # 2) entity registrations, placed before an existing activity-sample registration
+    m = re.search(r"^[ \t]*addColmiActivitySample\(schema, user, device\);[ \t]*\n", t, re.M) or \
+        re.search(r"^[ \t]*add\w+ActivitySample\(schema, user, device\);[ \t]*\n", t, re.M)
+    if not m:
+        lines = [l.strip() for l in t.splitlines() if "ActivitySample(schema" in l]
+        raise SystemExit("no activity-sample registration found in GBDaoGenerator; candidates: " + repr(lines[:6]))
+    print("registrations placed before:", m.group(0).strip())
+    t = t[: m.start()] + ENTITY_CALLS + t[m.start():]
 
-    # 3) entity definitions, placed before the Colmi activity sample definition
-    definition = "    private static Entity addColmiActivitySample(Schema schema, Entity user, Entity device) {\n"
-    if t.count(definition) != 1:
-        raise SystemExit(f"Colmi definition anchor not found exactly once (found {t.count(definition)})")
-    t = t.replace(definition, ENTITY_METHODS + definition)
+    # 3) entity definitions, placed before an existing activity-sample definition
+    d = re.search(r"^[ \t]*private static Entity addColmiActivitySample\(Schema schema, Entity user, Entity device\)[^\n]*\{[ \t]*\n", t, re.M) or \
+        re.search(r"^[ \t]*private static Entity add\w+ActivitySample\(Schema schema, Entity user, Entity device\)[^\n]*\{[ \t]*\n", t, re.M)
+    if not d:
+        raise SystemExit("no activity-sample definition found in GBDaoGenerator")
+    print("definitions placed before:", d.group(0).strip())
+    t = t[: d.start()] + ENTITY_METHODS + t[d.start():]
 
     # 4) the constants the new code uses must exist
     for name in ("SAMPLE_RAW_KIND", "SAMPLE_STEPS", "SAMPLE_STRESS", "SAMPLE_HEART_RATE", "SAMPLE_SPO2", "OVERRIDE"):
@@ -153,8 +184,15 @@ DESTINATIONS = {
     "XWatchProtocol.java": "service/devices/infinix",
 }
 
-edit(J + "/model/DeviceType.java", device_type)
-edit(J + "/devices/xwatch/XWatchCoordinator.java", old_xwatch)
+def find_file(name):
+    for dirpath, _dirs, files in os.walk(J):
+        if name in files:
+            return os.path.join(dirpath, name)
+    raise SystemExit(name + " not found")
+
+
+edit(find_file("DeviceType.java"), device_type)
+edit(find_file("XWatchCoordinator.java"), old_xwatch)
 edit(root + "/app/src/main/res/values/strings.xml", strings)
 edit(find_generator(), dao_generator)
 
