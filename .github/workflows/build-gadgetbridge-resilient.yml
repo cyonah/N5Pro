@@ -1,0 +1,86 @@
+# Builds Gadgetbridge with the Infinix XWatch N5 Pro support from the files in this repository's patch folder.
+# Replace the contents of .github/workflows/build-gadgetbridge.yml with this file.
+# It keeps a cached copy of the Gadgetbridge source, so a Codeberg outage does not stop a build
+# (the cache is filled by the first run that can reach Codeberg).
+name: Build Gadgetbridge debug APK (with Infinix XWatch)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false"
+    steps:
+      - name: Get this repository (the patch folder)
+        uses: actions/checkout@v4
+
+      - name: Restore the cached Gadgetbridge source, if any
+        uses: actions/cache/restore@v4
+        with:
+          path: gb-src.tar.gz
+          key: gadgetbridge-src-none
+          restore-keys: gadgetbridge-src-
+
+      - name: Get Gadgetbridge source (retries, then falls back to the cached copy)
+        id: gb
+        run: |
+          ok=0
+          for i in 1 2 3 4 5; do
+            rm -rf Gadgetbridge
+            if git clone --depth 1 https://codeberg.org/Freeyourgadget/Gadgetbridge.git; then
+              ok=1
+              break
+            fi
+            echo "Clone failed, attempt $i of 5."
+            sleep $((i * 20))
+          done
+          if [ "$ok" -eq 1 ]; then
+            rm -f gb-src.tar.gz
+            tar czf gb-src.tar.gz Gadgetbridge
+            echo "fresh=1" >> "$GITHUB_OUTPUT"
+          elif [ -f gb-src.tar.gz ]; then
+            echo "Codeberg is unreachable; using the cached copy of the source."
+            rm -rf Gadgetbridge
+            tar xzf gb-src.tar.gz
+            echo "fresh=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "Codeberg is unreachable and there is no cached copy yet. Try again later."
+            exit 1
+          fi
+          git -C Gadgetbridge log -1 --format='Gadgetbridge commit: %H %ad %s'
+
+      - name: Save the Gadgetbridge source to the cache (only after a fresh clone)
+        if: steps.gb.outputs.fresh == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: gb-src.tar.gz
+          key: gadgetbridge-src-${{ github.run_id }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Accept Android SDK licences
+        run: |
+          SDKM="$(command -v sdkmanager || find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | head -n 1)"
+          echo "Using sdkmanager at: $SDKM"
+          yes | "$SDKM" --licenses > /dev/null || true
+
+      - name: Add the Infinix XWatch N5 Pro support
+        run: python3 patch/apply_patch.py Gadgetbridge
+
+      - name: Build debug APK
+        working-directory: Gadgetbridge
+        run: ./gradlew assembleMainDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: gadgetbridge-debug-apk
+          path: Gadgetbridge/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
