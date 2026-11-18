@@ -15,8 +15,18 @@ jobs:
       - name: Check out this patch repository
         uses: actions/checkout@v4
 
-      - name: Get Gadgetbridge source
-        run: git clone --depth 1 https://codeberg.org/Freeyourgadget/Gadgetbridge.git
+      - name: Clone Gadgetbridge
+        run: |
+          for i in 1 2 3; do
+            rm -rf Gadgetbridge
+            if git clone --depth 1 https://codeberg.org/Freeyourgadget/Gadgetbridge.git; then
+              break
+            fi
+            echo "Clone failed, attempt $i."
+            if [ "$i" -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
+          git -C Gadgetbridge log -1 --format='Gadgetbridge commit: %H %ad %s'
 
       - name: Set up Java
         uses: actions/setup-java@v5
