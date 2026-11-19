@@ -638,8 +638,9 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         String last = uri.getLastPathSegment();
         if (last != null) {
             last = last.substring(Math.max(last.lastIndexOf('/'), last.lastIndexOf(':')) + 1);
-            if (last.matches("[0-9a-fA-F]{32}\\.wf")) {
-                return last.toLowerCase(Locale.ROOT);
+            // the store's name is 32 hex characters + .wf; a copy renamed to .fw (to get past the file manager) keeps it
+            if (last.matches("[0-9a-fA-F]{32}\\.(wf|fw)")) {
+                return last.substring(0, 32).toLowerCase(Locale.ROOT) + ".wf";
             }
         }
         try {

@@ -235,6 +235,36 @@ def install_create_support(path):
     print("createDeviceSupport installed in", path)
 
 
+def manifest(t):
+    """Adds .wf to the file types Gadgetbridge's installer activity accepts (same style as the existing .fw entries)."""
+    def patterns(ext):
+        return ["/.*" + "\\\\..*" * k + "\\\\." + ext for k in range(11)]
+
+    act = t.find("activities.install.FwAppInstallerActivity")
+    if act < 0:
+        raise SystemExit("FwAppInstallerActivity not found in AndroidManifest.xml")
+    end = t.find("</activity>", act)
+    block = t[act:end]
+    m = re.search(r'^([ \t]*)<data android:pathPattern="/\.\*\\\\\.fw" />\n', block, re.M)
+    if m:
+        indent = m.group(1)
+        new = "".join('%s<data android:pathPattern="%s" />\n' % (indent, pat) for pat in patterns("wf"))
+        pos = act + m.start()
+        print("manifest: .wf patterns added next to the .fw ones")
+        return t[:pos] + new + t[pos:]
+    # fallback: a separate filter at the end of the activity
+    new = ('        <intent-filter>\n'
+           '            <action android:name="android.intent.action.VIEW" />\n'
+           '            <category android:name="android.intent.category.DEFAULT" />\n'
+           '            <data android:scheme="content" />\n'
+           '            <data android:scheme="file" />\n'
+           '            <data android:mimeType="*/*" />\n'
+           + "".join('            <data android:pathPattern="%s" />\n' % pat for pat in patterns("wf")) +
+           '        </intent-filter>\n    ')
+    print("manifest: .fw patterns not found; added a separate filter for .wf")
+    return t[:end] + new + t[end:]
+
+
 def find_generator():
     for dirpath, _dirs, files in os.walk(root):
         if "GBDaoGenerator.java" in files:
@@ -265,6 +295,7 @@ with open(_xw, encoding="utf-8") as _f:
     remember_create_support(_f.read())
 edit(_xw, old_xwatch)
 edit(root + "/app/src/main/res/values/strings.xml", strings)
+edit(root + "/app/src/main/AndroidManifest.xml", manifest)
 edit(find_generator(), dao_generator)
 
 for name, folder in DESTINATIONS.items():
