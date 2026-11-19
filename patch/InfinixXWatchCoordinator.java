@@ -51,11 +51,13 @@ public class InfinixXWatchCoordinator extends AbstractBLEDeviceCoordinator {
         return R.string.devicetype_infinix_xwatch_n5_pro;
     }
 
+    /** Older Gadgetbridge versions create the support class from this; newer ones use createDeviceSupport below. */
     @NonNull
-    @Override
     public Class<? extends DeviceSupport> getDeviceSupportClass(final GBDevice device) {
         return InfinixXWatchSupport.class;
     }
+
+    // @@CREATE_DEVICE_SUPPORT@@
 
     @Override
     public DeviceKind getDeviceKind(@NonNull final GBDevice device) {

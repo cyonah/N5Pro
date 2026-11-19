@@ -167,6 +167,74 @@ def dao_generator(t):
     return t
 
 
+def extract_method(text, name):
+    """Returns (method_text_with_annotations, imports_needed) for the first declaration of `name`, or (None, [])."""
+    lines = text.splitlines(keepends=True)
+    decl = next((i for i, l in enumerate(lines) if (name + "(") in l and "public" in l), None)
+    if decl is None:
+        return None, []
+    start = decl
+    while start > 0 and lines[start - 1].strip().startswith("@"):
+        start -= 1
+    body = "".join(lines[decl:])
+    brace = body.find("{")
+    if brace < 0:
+        return None, []
+    depth = 0
+    end = None
+    for i in range(brace, len(body)):
+        if body[i] == "{":
+            depth += 1
+        elif body[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end is None:
+        return None, []
+    method = "".join(lines[start:decl]) + body[:end] + "\n"
+    method = re.sub(r"\bXWatchSupport\b", "InfinixXWatchSupport", method)
+    imports = []
+    for m in re.finditer(r"^import ([\w.]+\.(\w+));\n", text, re.M):
+        simple = m.group(2)
+        if simple not in ("XWatchSupport", "XWatchCoordinator") and re.search(r"\b" + simple + r"\b", method):
+            imports.append(m.group(0))
+    return method, imports
+
+
+XWATCH_CREATE_SUPPORT = {}
+
+
+def remember_create_support(t):
+    method, imports = extract_method(t, "createDeviceSupport")
+    XWATCH_CREATE_SUPPORT["method"] = method
+    XWATCH_CREATE_SUPPORT["imports"] = imports
+    print("createDeviceSupport copied from the old XWatch coordinator:", "yes" if method else "NOT FOUND")
+    return t
+
+
+def install_create_support(path):
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    marker = "    // @@CREATE_DEVICE_SUPPORT@@\n"
+    if marker not in text:
+        return
+    method = XWATCH_CREATE_SUPPORT.get("method")
+    if method:
+        indented = "".join(("    " + l if l.strip() and not l.startswith("    ") else l) for l in method.splitlines(keepends=True))
+        text = text.replace(marker, indented)
+        first = re.search(r"^import [^\n]+;\n", text, re.M)
+        extra = "".join(i for i in XWATCH_CREATE_SUPPORT["imports"] if i not in text)
+        if extra and first:
+            text = text[: first.start()] + extra + text[first.start():]
+    else:
+        text = text.replace(marker, "")
+        print("WARNING: no createDeviceSupport found in the old XWatch coordinator; the build may ask for one")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    print("createDeviceSupport installed in", path)
+
+
 def find_generator():
     for dirpath, _dirs, files in os.walk(root):
         if "GBDaoGenerator.java" in files:
@@ -192,7 +260,10 @@ def find_file(name):
 
 
 edit(find_file("DeviceType.java"), device_type)
-edit(find_file("XWatchCoordinator.java"), old_xwatch)
+_xw = find_file("XWatchCoordinator.java")
+with open(_xw, encoding="utf-8") as _f:
+    remember_create_support(_f.read())
+edit(_xw, old_xwatch)
 edit(root + "/app/src/main/res/values/strings.xml", strings)
 edit(find_generator(), dao_generator)
 
@@ -203,3 +274,5 @@ for name, folder in DESTINATIONS.items():
     os.makedirs(os.path.join(J, folder), exist_ok=True)
     shutil.copyfile(src, os.path.join(J, folder, name))
     print("copied", name, "->", folder)
+
+install_create_support(os.path.join(J, "devices/infinix/InfinixXWatchCoordinator.java"))
