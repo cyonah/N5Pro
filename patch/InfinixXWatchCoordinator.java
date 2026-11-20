@@ -73,6 +73,15 @@ public class InfinixXWatchCoordinator extends AbstractBLEDeviceCoordinator {
 
     // ---------------------------------------------------------------- what the watch can do (dashboard)
 
+    /**
+     * Shows the install button on the watch's card in the device list. It opens a file picker, so a watch-face
+     * (.wf) file can be chosen directly, without relying on a file manager offering Gadgetbridge for that type.
+     */
+    @Override
+    public boolean supportsFlashing(@NonNull final GBDevice device) {
+        return true;
+    }
+
     @Override
     public boolean supportsDataFetching(@NonNull final GBDevice device) {
         return true;
