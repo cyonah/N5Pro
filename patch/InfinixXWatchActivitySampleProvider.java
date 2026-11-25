@@ -34,7 +34,7 @@ public class InfinixXWatchActivitySampleProvider extends AbstractSampleProvider<
     @Nullable
     @Override
     protected Property getRawKindSampleProperty() {
-        return null;
+        return InfinixXWatchActivitySampleDao.Properties.RawKind;
     }
 
     @NonNull

@@ -9,11 +9,11 @@
 package nodomain.freeyourgadget.gadgetbridge.service.devices.infinix;
 
 import android.bluetooth.BluetoothGatt;
+import android.bluetooth.BluetoothGattCharacteristic;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.bluetooth.BluetoothGattCharacteristic;
 
 import androidx.annotation.NonNull;
 
@@ -26,7 +26,7 @@ import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -38,6 +38,8 @@ import java.util.UUID;
 import nodomain.freeyourgadget.gadgetbridge.GBApplication;
 import nodomain.freeyourgadget.gadgetbridge.database.DBHandler;
 import nodomain.freeyourgadget.gadgetbridge.database.DBHelper;
+import nodomain.freeyourgadget.gadgetbridge.deviceevents.GBDeviceEventBatteryInfo;
+import nodomain.freeyourgadget.gadgetbridge.deviceevents.GBDeviceEventVersionInfo;
 import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchHeartRateSampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchSpo2SampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.devices.InfinixXWatchStressSampleProvider;
@@ -47,11 +49,11 @@ import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchActivitySample
 import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchHeartRateSample;
 import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchSpo2Sample;
 import nodomain.freeyourgadget.gadgetbridge.entities.InfinixXWatchStressSample;
+import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice;
 import nodomain.freeyourgadget.gadgetbridge.model.ActivityKind;
 import nodomain.freeyourgadget.gadgetbridge.model.ActivitySample;
-import nodomain.freeyourgadget.gadgetbridge.deviceevents.GBDeviceEventBatteryInfo;
-import nodomain.freeyourgadget.gadgetbridge.deviceevents.GBDeviceEventVersionInfo;
-import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice;
+import nodomain.freeyourgadget.gadgetbridge.model.CallSpec;
+import nodomain.freeyourgadget.gadgetbridge.model.NotificationSpec;
 import nodomain.freeyourgadget.gadgetbridge.service.btle.AbstractBTLESingleDeviceSupport;
 import nodomain.freeyourgadget.gadgetbridge.service.btle.GattService;
 import nodomain.freeyourgadget.gadgetbridge.service.btle.TransactionBuilder;
@@ -78,6 +80,8 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
 
     /** Wait after enabling notifications before the first command write. */
     private static final int NOTIFY_SETTLE_MS = 2000;
+    private static final int SLEEP_STEP_SECONDS = 60;
+    private static final int HOURLY_BUCKET_SECONDS = 3600;
 
     private final Map<UUID, XWatchProtocol.Reassembler> reassemblers = new HashMap<>();
 
@@ -124,7 +128,14 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         builder.sleep(NOTIFY_SETTLE_MS);
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.versionRequest());
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.batteryRequest());
-        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.timeSync(nowMillis / 1000, tzValue));
+        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.timeSync(nowMillis / 1000L, tzValue));
+
+        final String lang = Locale.getDefault().getLanguage();
+        if (lang != null && !lang.isEmpty()) {
+            builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.languageSync(lang));
+        }
+        builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.goalQuery(0));
+
         // Read-only queries for "today" and "history". The watch answers each with an index; the
         // checkpoint reply below makes it send the records, which are then stored for the dashboard.
         builder.write(XWatchProtocol.CHAR_COMMAND, XWatchProtocol.historyRequest(XWatchProtocol.CMD_STEPS, XWatchProtocol.QUERY_TODAY));
@@ -180,6 +191,20 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         b.queue();
     }
 
+    @Override
+    public void onNotification(final NotificationSpec notificationSpec) {
+        // TODO: Encode notification payload once the XW5E notification cmd & protobuf fields are captured.
+        LOG.debug("notification received for watch: app={} title={}",
+                notificationSpec.getAppName(), notificationSpec.getTitle());
+    }
+
+    @Override
+    public void onSetCallState(final CallSpec callSpec) {
+        // TODO: Encode call state payload once captured from MyHealth + btsnoop.
+        LOG.debug("call state update: command={} phoneNumber={}",
+                callSpec.getCommand(), callSpec.getPhoneNumber());
+    }
+
     private void handleFrame(final UUID source, final XWatchProtocol.Frame f) {
         LOG.debug("{} frame cmd=0x{} flags=0x{} idx={} len={}", source,
                 Integer.toHexString(f.cmd), Integer.toHexString(f.flags), f.idx, f.payload.length);
@@ -195,6 +220,22 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         }
 
         switch (f.cmd) {
+            case XWatchProtocol.CMD_GOAL_QUERY:
+            case XWatchProtocol.CMD_GOAL_SET: {
+                long idx = -1;
+                long val = -1;
+                for (final XWatchProtocol.Field fld : XWatchProtocol.parse(f.payload)) {
+                    if (!fld.isVarint()) continue;
+                    if (fld.number == 1) idx = fld.value;
+                    if (fld.number == 2) val = fld.value;
+                }
+                LOG.info("goal/setting cmd 0x{} index={} value={}", Integer.toHexString(f.cmd), idx, val);
+                break;
+            }
+            case XWatchProtocol.CMD_LANGUAGE: {
+                LOG.info("language cmd 0x61 reply payload={}", GB.hexdump(f.payload));
+                break;
+            }
             case XWatchProtocol.CMD_VERSION: {
                 final String version = XWatchProtocol.decodeVersion(f.payload);
                 LOG.info("got firmware version {}", version);
@@ -248,7 +289,7 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
             case XWatchProtocol.CMD_STEPS: {
                 final List<XWatchProtocol.StepDay> days = XWatchProtocol.decodeSteps(f.payload);
                 for (final XWatchProtocol.StepDay d : days) {
-                    LOG.info("steps {}: total {} in {} buckets", new Date(d.date * 1000), d.total(), d.steps.size());
+                    LOG.info("steps {}: total {} in {} buckets", new Date(d.date * 1000L), d.total(), d.steps.size());
                 }
                 saveSteps(days);
                 break;
@@ -260,19 +301,20 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
                     for (final byte b : d.readings) {
                         if (b != 0) nonZero++;
                     }
-                    LOG.info("heart rate {}: {} slots, {} non-zero", new Date(d.date * 1000), d.readings.length, nonZero);
+                    LOG.info("heart rate {}: {} slots, {} non-zero", new Date(d.date * 1000L), d.readings.length, nonZero);
                 }
                 saveHeartRate(days);
                 break;
             }
             case XWatchProtocol.CMD_SLEEP: {
-                // Decoded and logged only; sleep storage comes later.
-                for (final XWatchProtocol.SleepDay d : XWatchProtocol.decodeSleep(f.payload)) {
+                final List<XWatchProtocol.SleepDay> days = XWatchProtocol.decodeSleep(f.payload);
+                for (final XWatchProtocol.SleepDay d : days) {
                     for (final XWatchProtocol.SleepSegment s : d.segments) {
-                        LOG.info("sleep {} -> {}: {} min state {} category {}", new Date(s.start * 1000),
-                                new Date(s.end * 1000), s.minutes, s.state, s.category);
+                        LOG.info("sleep {} -> {}: {} min state {} category {}", new Date(s.start * 1000L),
+                                new Date(s.end * 1000L), s.minutes, s.state, s.category);
                     }
                 }
+                saveSleep(days);
                 break;
             }
             default:
@@ -290,6 +332,7 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
      */
     private static final long EVENT_BLOOD_OXYGEN_TEST = 2003;
     private static final long EVENT_HEART_RATE_TEST = 2002;
+    private static final long EVENT_LIVE_STEPS = 2006;
     private static final long EVENT_STRESS_TEST = 2021;
     /** The watch repeats each result, once about 5 s and once about 30 s later. */
     private static final long DUPLICATE_WINDOW_MS = 120_000L;
@@ -334,6 +377,20 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
             return;
         }
 
+        if (eventId == EVENT_LIVE_STEPS && inner != null) {
+            long liveSteps = -1;
+            for (final XWatchProtocol.Field x : XWatchProtocol.parse(inner)) {
+                if (x.isVarint() && x.number == 1) {
+                    liveSteps = x.value;
+                    break;
+                }
+            }
+            if (liveSteps >= 0 && liveSteps <= 250_000) {
+                saveLiveSteps((int) liveSteps, System.currentTimeMillis());
+            }
+            return;
+        }
+
         if (eventId == EVENT_BLOOD_OXYGEN_TEST && inner != null) {
             try {
                 long testStatus = -1;
@@ -373,13 +430,19 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
             }
             lastHeartRateValue = value;
             lastHeartRateMillis = now;
-        } else if (eventId == EVENT_STRESS_TEST && status == 1 && value >= 0 && value <= 100) {
+            return;
+        }
+
+        if (eventId == EVENT_STRESS_TEST && status == 1 && value >= 0 && value <= 100) {
             if (value != lastStressValue || now - lastStressMillis > DUPLICATE_WINDOW_MS) {
                 saveStress((int) value, now);
             }
             lastStressValue = value;
             lastStressMillis = now;
+            return;
         }
+
+        LOG.debug("unhandled event id={} payload={}", eventId, GB.hexdump(f.payload));
     }
 
     // ---------------------------------------------------------------- storage
@@ -432,11 +495,37 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         }
     }
 
+    private void saveLiveSteps(final int stepsToday, final long nowMillis) {
+        try (DBHandler handler = GBApplication.acquireDB()) {
+            final DaoSession session = handler.getDaoSession();
+            final long deviceId = DBHelper.getDevice(getDevice(), session).getId();
+            final long userId = DBHelper.getUser(session).getId();
+            final InfinixXWatchActivitySampleDao dao = session.getInfinixXWatchActivitySampleDao();
+
+            final int nowSec = (int) (nowMillis / 1000L);
+            final Calendar cal = Calendar.getInstance();
+            cal.setTimeInMillis(nowMillis);
+            cal.set(Calendar.HOUR_OF_DAY, 0);
+            cal.set(Calendar.MINUTE, 0);
+            cal.set(Calendar.SECOND, 0);
+            cal.set(Calendar.MILLISECOND, 0);
+            final int dayStartSec = (int) (cal.getTimeInMillis() / 1000L);
+
+            final int bucketIndex = Math.max(0, Math.min(23, (nowSec - dayStartSec) / HOURLY_BUCKET_SECONDS));
+            final int bucketTs = dayStartSec + bucketIndex * HOURLY_BUCKET_SECONDS;
+
+            upsert(dao, deviceId, userId, bucketTs, stepsToday, null);
+            LOG.info("saved live steps {} at bucket ts {}", stepsToday, bucketTs);
+        } catch (final Exception e) {
+            LOG.error("failed to save live steps", e);
+        }
+    }
+
     private void saveSteps(final List<XWatchProtocol.StepDay> days) {
         if (days.isEmpty()) {
             return;
         }
-        final int now = (int) (System.currentTimeMillis() / 1000);
+        final int now = (int) (System.currentTimeMillis() / 1000L);
         try (DBHandler handler = GBApplication.acquireDB()) {
             final DaoSession session = handler.getDaoSession();
             final long deviceId = DBHelper.getDevice(getDevice(), session).getId();
@@ -467,7 +556,7 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         if (days.isEmpty()) {
             return;
         }
-        final int now = (int) (System.currentTimeMillis() / 1000);
+        final int now = (int) (System.currentTimeMillis() / 1000L);
         try (DBHandler handler = GBApplication.acquireDB()) {
             final DaoSession session = handler.getDaoSession();
             final long deviceId = DBHelper.getDevice(getDevice(), session).getId();
@@ -493,6 +582,72 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         } catch (final Exception e) {
             LOG.error("failed to save heart rate", e);
         }
+    }
+
+    private static ActivityKind mapSleepKind(final XWatchProtocol.SleepSegment seg) {
+        // TODO: Refine once state/category values are confirmed on full sleep captures.
+        switch (seg.state) {
+            case 1:
+                return ActivityKind.LIGHT_SLEEP;
+            case 2:
+                return ActivityKind.DEEP_SLEEP;
+            default:
+                return ActivityKind.SLEEP;
+        }
+    }
+
+    private void saveSleep(final List<XWatchProtocol.SleepDay> days) {
+        if (days == null || days.isEmpty()) {
+            return;
+        }
+        final int now = (int) (System.currentTimeMillis() / 1000L);
+        try (DBHandler handler = GBApplication.acquireDB()) {
+            final DaoSession session = handler.getDaoSession();
+            final long deviceId = DBHelper.getDevice(getDevice(), session).getId();
+            final long userId = DBHelper.getUser(session).getId();
+            final InfinixXWatchActivitySampleDao dao = session.getInfinixXWatchActivitySampleDao();
+            int saved = 0;
+            for (final XWatchProtocol.SleepDay d : days) {
+                if (d.segments == null) {
+                    continue;
+                }
+                for (final XWatchProtocol.SleepSegment s : d.segments) {
+                    if (s.end <= s.start) {
+                        continue;
+                    }
+                    final int kindCode = mapSleepKind(s).getCode();
+                    final long endSec = Math.min(s.end, now);
+                    for (long ts = s.start; ts < endSec; ts += SLEEP_STEP_SECONDS) {
+                        upsertSleep(dao, deviceId, userId, (int) ts, kindCode);
+                        saved++;
+                    }
+                }
+            }
+            LOG.info("saved {} sleep samples", saved);
+        } catch (final Exception e) {
+            LOG.error("failed to save sleep", e);
+        }
+    }
+
+    private static void upsertSleep(final InfinixXWatchActivitySampleDao dao,
+                                    final long deviceId,
+                                    final long userId,
+                                    final int timestamp,
+                                    final int kindCode) {
+        InfinixXWatchActivitySample sample = dao.queryBuilder()
+                .where(InfinixXWatchActivitySampleDao.Properties.Timestamp.eq(timestamp),
+                        InfinixXWatchActivitySampleDao.Properties.DeviceId.eq(deviceId))
+                .unique();
+        if (sample == null) {
+            sample = new InfinixXWatchActivitySample();
+            sample.setTimestamp(timestamp);
+            sample.setDeviceId(deviceId);
+            sample.setUserId(userId);
+            sample.setSteps(ActivitySample.NOT_MEASURED);
+            sample.setHeartRate(ActivitySample.NOT_MEASURED);
+        }
+        sample.setRawKind(kindCode);
+        dao.insertOrReplace(sample);
     }
 
     /** Steps and heart rate can land on the same timestamp, so update an existing row instead of replacing it. */
@@ -672,3 +827,4 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         return false;
     }
 }
+```[cite: 8, 12, 13]

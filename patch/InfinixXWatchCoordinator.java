@@ -110,7 +110,7 @@ public class InfinixXWatchCoordinator extends AbstractBLEDeviceCoordinator {
     /** Sleep is decoded but not stored yet. */
     @Override
     public boolean supportsSleepMeasurement(@NonNull final GBDevice device) {
-        return false;
+        return true;
     }
 
     // ---------------------------------------------------------------- sample providers

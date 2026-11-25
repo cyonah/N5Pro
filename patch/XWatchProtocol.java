@@ -1,6 +1,7 @@
 package nodomain.freeyourgadget.gadgetbridge.service.devices.infinix;
 
 import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -29,12 +30,19 @@ public final class XWatchProtocol {
     public static final UUID CHAR_INFO = UUID.fromString("00009233-0000-1000-8000-00805f9b34fb");
 
     // ------------------------------------------------------------ commands
+    public static final int CMD_GOAL_QUERY = 0x20;
+    public static final int CMD_GOAL_SET = 0x21;
     public static final int CMD_VERSION = 0x32;
     public static final int CMD_BATTERY = 0x33;
     public static final int CMD_STEPS = 0x34;
+    public static final int CMD_SPORT_INFO = 0x35;
     public static final int CMD_HEART_RATE = 0x36;
     public static final int CMD_SLEEP = 0x38;
+    public static final int CMD_CONTACT_ADD = 0x57;
+    public static final int CMD_CONTACT_DELETE = 0x58;
+    public static final int CMD_WEATHER = 0x5B;
     public static final int CMD_TIME_SYNC = 0x60;
+    public static final int CMD_LANGUAGE = 0x61;
     public static final int CMD_BIND = 0x6E;
     public static final int CMD_BIND_REPLY = 0x91;
     public static final int CMD_RESPONSE = 0x92;
@@ -296,9 +304,37 @@ public final class XWatchProtocol {
         return buildFrame(CMD_TIME_SYNC, o.toByteArray());
     }
 
+    /** Query a numeric setting/goal slot (cmd 0x20): field 1 = slot index. */
+    public static byte[] goalQuery(final int index) {
+        final ByteArrayOutputStream o = new ByteArrayOutputStream();
+        o.write(0x08);
+        writeVarint(o, index);
+        return buildFrame(CMD_GOAL_QUERY, o.toByteArray());
+    }
+
+    /** Set a numeric setting/goal slot (cmd 0x21): field 1 = slot index, field 2 = value. */
+    public static byte[] goalSet(final int index, final int value) {
+        final ByteArrayOutputStream o = new ByteArrayOutputStream();
+        o.write(0x08);
+        writeVarint(o, index);
+        o.write(0x10);
+        writeVarint(o, value);
+        return buildFrame(CMD_GOAL_SET, o.toByteArray());
+    }
+
+    /** Language setting (cmd 0x61): field 1 = language code string (e.g. "en"). */
+    public static byte[] languageSync(final String langCode) {
+        final byte[] bytes = langCode.getBytes(StandardCharsets.UTF_8);
+        final ByteArrayOutputStream o = new ByteArrayOutputStream();
+        o.write(0x0A);
+        writeVarint(o, bytes.length);
+        o.write(bytes, 0, bytes.length);
+        return buildFrame(CMD_LANGUAGE, o.toByteArray());
+    }
+
     /** Bind (cmd 0x6E): field 1 = 32-character identity string. How the watch validates it is unknown. */
     public static byte[] bind(final String identity) {
-        final byte[] id = identity.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        final byte[] id = identity.getBytes(StandardCharsets.US_ASCII);
         final ByteArrayOutputStream o = new ByteArrayOutputStream();
         o.write(0x0A);
         writeVarint(o, id.length);
@@ -310,7 +346,7 @@ public final class XWatchProtocol {
 
     /** Start message: {1: name, 2: size, 3: type, 4: 0, 5: 0} (the zero fields are present in the capture). */
     public static byte[] fileStart(final String name, final int size, final int type) {
-        final byte[] n = name.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        final byte[] n = name.getBytes(StandardCharsets.US_ASCII);
         final ByteArrayOutputStream o = new ByteArrayOutputStream();
         o.write(0x0A);
         writeVarint(o, n.length);
@@ -381,7 +417,7 @@ public final class XWatchProtocol {
     // -------------------------------------------------------------- replies
     public static String decodeVersion(final byte[] payload) {
         final Field f = first(parse(payload), 2);
-        return f != null && !f.isVarint() ? new String(f.data, java.nio.charset.StandardCharsets.US_ASCII) : null;
+        return f != null && !f.isVarint() ? new String(f.data, StandardCharsets.US_ASCII) : null;
     }
 
     /** Battery percentage, or -1 if absent. */
@@ -536,3 +572,4 @@ public final class XWatchProtocol {
         return buildFrame(cmd, o.toByteArray());
     }
 }
+```[cite: 8, 13]
