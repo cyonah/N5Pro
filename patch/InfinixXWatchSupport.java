@@ -194,15 +194,13 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
     @Override
     public void onNotification(final NotificationSpec notificationSpec) {
         // TODO: Encode notification payload once the XW5E notification cmd & protobuf fields are captured.
-        LOG.debug("notification received for watch: app={} title={}",
-                notificationSpec.appName, notificationSpec.title);
+        LOG.debug("notification received for watch: {}", notificationSpec);
     }
 
     @Override
     public void onSetCallState(final CallSpec callSpec) {
         // TODO: Encode call state payload once captured from MyHealth + btsnoop.
-        LOG.debug("call state update: command={} phoneNumber={}",
-                callSpec.command, callSpec.phoneNumber);
+        LOG.debug("call state update: {}", callSpec);
     }
 
     private void handleFrame(final UUID source, final XWatchProtocol.Frame f) {
@@ -827,3 +825,10 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         return false;
     }
 }
+```[cite: 8, 12, 13]
+
+<ElicitationsGroup message="What would you like to do next once the build passes?">
+  <Elicitation label="Capture notification bytes" query="How do I capture phone notification and call BLE frames from MyHealth to implement onNotification and onSetCallState?"/>
+  <Elicitation label="Check sleep & step logs" query="What log lines should I watch for in logcat to verify sleep storage and live step event 2006?"/>
+  <Elicitation label="Inspect another build error" query="The build failed with another compiler or Gradle error that I will paste next."/>
+</ElicitationsGroup>
