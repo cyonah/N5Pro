@@ -195,14 +195,14 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
     public void onNotification(final NotificationSpec notificationSpec) {
         // TODO: Encode notification payload once the XW5E notification cmd & protobuf fields are captured.
         LOG.debug("notification received for watch: app={} title={}",
-                notificationSpec.getAppName(), notificationSpec.getTitle());
+                notificationSpec.appName, notificationSpec.title);
     }
 
     @Override
     public void onSetCallState(final CallSpec callSpec) {
         // TODO: Encode call state payload once captured from MyHealth + btsnoop.
         LOG.debug("call state update: command={} phoneNumber={}",
-                callSpec.getCommand(), callSpec.getPhoneNumber());
+                callSpec.command, callSpec.phoneNumber);
     }
 
     private void handleFrame(final UUID source, final XWatchProtocol.Frame f) {
@@ -592,7 +592,7 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
             case 2:
                 return ActivityKind.DEEP_SLEEP;
             default:
-                return ActivityKind.SLEEP;
+                return ActivityKind.LIGHT_SLEEP;
         }
     }
 
