@@ -572,4 +572,3 @@ public final class XWatchProtocol {
         return buildFrame(cmd, o.toByteArray());
     }
 }
-```[cite: 8, 13]
