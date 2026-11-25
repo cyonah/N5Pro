@@ -825,10 +825,3 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         return false;
     }
 }
-```[cite: 8, 12, 13]
-
-<ElicitationsGroup message="What would you like to do next once the build passes?">
-  <Elicitation label="Capture notification bytes" query="How do I capture phone notification and call BLE frames from MyHealth to implement onNotification and onSetCallState?"/>
-  <Elicitation label="Check sleep & step logs" query="What log lines should I watch for in logcat to verify sleep storage and live step event 2006?"/>
-  <Elicitation label="Inspect another build error" query="The build failed with another compiler or Gradle error that I will paste next."/>
-</ElicitationsGroup>
