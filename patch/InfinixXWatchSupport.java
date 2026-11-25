@@ -827,4 +827,3 @@ public class InfinixXWatchSupport extends AbstractBTLESingleDeviceSupport {
         return false;
     }
 }
-```[cite: 8, 12, 13]
